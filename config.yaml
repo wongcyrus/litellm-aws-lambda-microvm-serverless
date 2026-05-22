@@ -1,8 +1,14 @@
 model_list:
-  # Gemini 3.1 Series
-  - model_name: gemini-3.1-flash-lite-preview
+  - model_name: gemini-3.5-flash
     litellm_params:
-      model: vertex_ai/gemini-3.1-flash-lite-preview
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: "os.environ/VERTEXAI_PROJECT"
+      vertex_location: "os.environ/VERTEXAI_LOCATION"
+
+  # Gemini 3.1 Series
+  - model_name: gemini-3.1-flash-lite
+    litellm_params:
+      model: vertex_ai/gemini-3.1-flash-lite
       vertex_project: "os.environ/VERTEXAI_PROJECT"
       vertex_location: "os.environ/VERTEXAI_LOCATION"
 
@@ -55,14 +61,20 @@ model_list:
     litellm_params:
       model: bedrock/global.amazon.nova-2-lite-v1:0  
       api_key: "os.environ/AWS_BEARER_TOKEN_BEDROCK"
+      drop_params: true
 
-  - model_name: nova-1-premier
+  - model_name: minimax-m2.5
     litellm_params:
-      model: bedrock/us.amazon.nova-premier-v1:0
-      aws_region_name: "os.environ/AWS_REGION"
+      model: bedrock/minimax.minimax-m2.5
+      aws_region_name: "os.environ/AWS_REGION"      
       api_key: "os.environ/AWS_BEARER_TOKEN_BEDROCK"
 
-
+  - model_name: kimi-k2.5
+    litellm_params:
+      model: bedrock/moonshotai.kimi-k2.5
+      aws_region_name: "os.environ/AWS_REGION"      
+      api_key: "os.environ/AWS_BEARER_TOKEN_BEDROCK"
+      
   # Azure OpenAI Configuration
   - model_name: gpt-5.2
     litellm_params:
@@ -81,3 +93,4 @@ general_settings:
   maximum_spend_logs_retention_period: "30d"  
   # Sets how often the cleanup task runs (optional)
   maximum_spend_logs_retention_interval: "1d"
+  allow_user_api_routes: true

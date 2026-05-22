@@ -1,6 +1,6 @@
 # LiteLLM Proxy Setup
 
-A production-ready LiteLLM Proxy configuration supporting **Google Vertex AI (Gemini 3.1, 2.5, 1.5)**, **AWS Bedrock (Nova models)**, and **Azure OpenAI (GPT-5.2)** with PostgreSQL persistence and virtual key budgeting.
+A production-ready LiteLLM Proxy configuration supporting **Google Vertex AI (Gemini 3.5, 3.1, 3.0, 2.5)**, **AWS Bedrock (Nova + Minimax + Kimi)**, and **Azure OpenAI (GPT-5.2)** with PostgreSQL persistence and virtual key budgeting.
 
 ## 🚀 Quick Start
 
@@ -37,18 +37,26 @@ Create and attach an IAM policy to the IAM user/role that will generate and use 
 
 ```json
 {
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "InvokeNovaModels",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream"
-      ],
-      "Resource": "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
-    }
-  ]
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "bedrock:InvokeModel",
+                "bedrock:InvokeModelWithResponseStream"
+            ],
+            "Resource": [
+                "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0",
+                "arn:aws:bedrock:us-east-1::foundation-model/minimax.minimax-m2.5",
+                "arn:aws:bedrock:us-east-1::foundation-model/moonshotai.kimi-k2.5"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": "bedrock:CallWithBearerToken",
+            "Resource": "*"
+        }
+    ]
 }
 ```
 
@@ -68,13 +76,22 @@ cp .env.template .env
 docker compose up -d
 ```
 
+### 4. Reset Everything
+If you want to wipe the Docker state and start fresh, remove the stack and the named Postgres volume:
+
+```bash
+docker compose down -v --remove-orphans
+docker compose up -d
+```
+
 ---
 
 ## 🛠 Supported Models
 
 | Model Alias | Provider | Underlying Model |
 | :--- | :--- | :--- |
-| **`gemini-3.1-flash-lite-preview`** | Vertex AI | `vertex_ai/gemini-3.1-flash-lite-preview` |
+| **`gemini-3.5-flash`** | Vertex AI | `vertex_ai/gemini-3.5-flash` |
+| **`gemini-3.1-flash-lite`** | Vertex AI | `vertex_ai/gemini-3.1-flash-lite` |
 | **`gemini-3.1-flash-image-preview`** | Vertex AI | `vertex_ai/gemini-3.1-flash-image-preview` |
 | **`gemini-3.1-pro-preview`** | Vertex AI | `vertex_ai/gemini-3.1-pro-preview` |
 | **`gemini-3.1-pro-preview-customtools`** | Vertex AI | `vertex_ai/gemini-3.1-pro-preview` (with tools) |
@@ -83,8 +100,8 @@ docker compose up -d
 | **`gemini-2.5-flash`** | Vertex AI | `vertex_ai/gemini-2.5-flash` |
 | **`gemini-2.5-flash-lite`** | Vertex AI | `vertex_ai/gemini-2.5-flash-lite` |
 | **`nova-2-lite`** | AWS Bedrock | `bedrock/global.amazon.nova-2-lite-v1:0` |
-| **`nova-1-premier`** | AWS Bedrock | `bedrock/us.amazon.nova-premier-v1:0` |
-| **`gemini-1.5-pro`** | Vertex AI | `vertex_ai/gemini-1.5-pro` |
+| **`minimax-m2.5`** | AWS Bedrock | `bedrock/minimax.minimax-m2.5` |
+| **`kimi-k2.5`** | AWS Bedrock | `bedrock/moonshotai.kimi-k2.5` |
 | **`gpt-5.2`** | Azure OpenAI | `azure/gpt-5.2` (with reasoning support) |
 
 ---
@@ -105,7 +122,7 @@ curl -X POST 'http://localhost:4000/key/generate' \
 ```
 
 
-## Model Configire in OpenClaw
+## Model Config in OpenClaw
 
 ```
   "models": {
@@ -116,8 +133,25 @@ curl -X POST 'http://localhost:4000/key/generate' \
         "api": "openai-completions",
         "models": [
           {
-            "id": "gemini-3.1-flash-lite-preview",
-            "name": "gemini-3.1-flash-lite-preview",
+            "id": "gemini-3.5-flash",
+            "name": "gemini-3.5-flash",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1048576,
+            "maxTokens": 8192
+          },
+          {
+            "id": "gemini-3.1-flash-lite",
+            "name": "gemini-3.1-flash-lite",
             "reasoning": true,
             "input": [
               "text",
@@ -286,8 +320,25 @@ curl -X POST 'http://localhost:4000/key/generate' \
             "maxTokens": 8192
           },
           {
-            "id": "nova-1-premier",
-            "name": "nova-1-premier",
+            "id": "minimax-m2.5",
+            "name": "minimax-m2.5",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 300000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "kimi-k2.5",
+            "name": "kimi-k2.5",
             "reasoning": true,
             "input": [
               "text",
