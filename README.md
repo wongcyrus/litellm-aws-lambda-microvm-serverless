@@ -413,6 +413,7 @@ This repository now includes a CDK stack at `infra/cdk` for the private architec
 * IAM roles and S3 artifact bucket for MicroVM image/build flow
 * ECR repository + ARM64 CodeBuild project to mirror LiteLLM base image into private ECR
 * DynamoDB cache table for proxy MicroVM/token state with TTL
+* Custom resource post-deploy readiness check that calls LiteLLM `/health/liveliness` until it is `200` (max 5 minutes)
 
 ### Deploy
 Deploy everything in one command (default creates MicroVM image from `infra/cdk/microvm-image`):
@@ -479,6 +480,7 @@ API_GATEWAY_API_KEY_VALUE=<same-api-key-used-for-deploy> ./scripts/destroy-stack
   * `useCodebuildEcrBaseImage=true` rewrites MicroVM Dockerfile `FROM` at synth time to `<stack ECR repo>:main-stable`.
   * `microvmContainerBaseImage=<uri>` overrides the Dockerfile base image explicitly (higher priority than `useCodebuildEcrBaseImage`).
   * `scripts/destroy-stack.sh` terminates non-terminated MicroVMs for this stack image before calling `cdk destroy`.
+  * A custom resource invokes the proxy Lambda directly (not API Gateway) and checks LiteLLM `/health/liveliness` until `200` (hard-fails after 5 minutes).
 * The image default egress connector stays `INTERNET_EGRESS`.
 * Runtime `RunMicrovm` egress uses the managed VPC connector for Aurora access.
 * Bedrock and other AWS service reachability at runtime comes through VPC endpoints.

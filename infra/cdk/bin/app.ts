@@ -14,6 +14,7 @@ const useCodebuildEcrBaseImage =
   useCodebuildEcrBaseImageContext === undefined ? false : String(useCodebuildEcrBaseImageContext).toLowerCase() === "true";
 const publicMicrovmContext = app.node.tryGetContext("publicMicrovm");
 const publicMicrovm = publicMicrovmContext === undefined ? true : String(publicMicrovmContext).toLowerCase() === "true";
+const readinessCheckNonce = new Date().toISOString();
 const internetEgressConnectorArn = `arn:aws:lambda:${microvmRegion}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`;
 
 if (!microvmRegion || !apiGatewayApiKeyValue) {
@@ -41,6 +42,7 @@ new PrivateLiteLlmMicrovmStack(app, "PrivateLiteLlmMicrovmStack", {
   microvmEgressConnectorArn: microvmEgressConnectorArn ? String(microvmEgressConnectorArn) : undefined,
   microvmContainerBaseImage: microvmContainerBaseImage ? String(microvmContainerBaseImage) : undefined,
   useCodebuildEcrBaseImage,
+  readinessCheckNonce,
   publicMicrovm,
   apiGatewayApiKeyValue: String(apiGatewayApiKeyValue)
 });

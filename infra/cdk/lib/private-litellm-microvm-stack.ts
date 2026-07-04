@@ -15,6 +15,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as cr from "aws-cdk-lib/custom-resources";
 
 export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   microvmRegion: string;
@@ -22,6 +23,7 @@ export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   microvmEgressConnectorArn?: string;
   microvmContainerBaseImage?: string;
   useCodebuildEcrBaseImage: boolean;
+  readinessCheckNonce: string;
   publicMicrovm: boolean;
   apiGatewayApiKeyValue: string;
 }
@@ -430,6 +432,74 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         }
       }
     });
+    const litellmReadyCheckFunction = new lambda.Function(this, "LitellmReadyCheckFunction", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      timeout: cdk.Duration.minutes(5),
+      code: lambda.Code.fromInline(`
+import json
+import time
+import boto3
+
+_lambda = boto3.client("lambda")
+
+def handler(event, context):
+    if event.get("RequestType") == "Delete":
+        return {"PhysicalResourceId": "litellm-ready-check"}
+
+    props = event.get("ResourceProperties") or {}
+    function_name = str(props.get("ProxyFunctionName") or "")
+    max_attempts = int(props.get("MaxAttempts") or 60)
+    delay_seconds = int(props.get("DelaySeconds") or 5)
+    nonce = str(props.get("Nonce") or "static")
+    if not function_name:
+        raise RuntimeError("ProxyFunctionName is required for readiness check.")
+
+    payload = {
+        "httpMethod": "GET",
+        "path": "/health/liveliness",
+        "headers": {},
+        "queryStringParameters": None,
+        "body": None,
+        "isBase64Encoded": False,
+    }
+    last_status = 0
+    last_body = ""
+    for _ in range(max_attempts):
+        response = _lambda.invoke(
+            FunctionName=function_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload).encode("utf-8"),
+        )
+        body = response["Payload"].read()
+        result = json.loads(body.decode("utf-8") or "{}")
+        last_status = int(result.get("statusCode") or 0)
+        last_body = str(result.get("body") or "")
+        if last_status == 200:
+            return {
+                "PhysicalResourceId": f"litellm-ready-check-{nonce}",
+                "Data": {"statusCode": str(last_status), "body": last_body},
+            }
+        time.sleep(delay_seconds)
+
+    raise RuntimeError(f"LiteLLM readiness check failed. lastStatus={last_status} lastBody={last_body}")
+      `)
+    });
+    proxyFunction.grantInvoke(litellmReadyCheckFunction);
+    const litellmReadyCheckProvider = new cr.Provider(this, "LitellmReadyCheckProvider", {
+      onEventHandler: litellmReadyCheckFunction
+    });
+    const litellmReadyCheck = new cdk.CustomResource(this, "LitellmReadyCheck", {
+      serviceToken: litellmReadyCheckProvider.serviceToken,
+      properties: {
+        ProxyFunctionName: proxyFunction.functionName,
+        MaxAttempts: 60,
+        DelaySeconds: 5,
+        Nonce: props.readinessCheckNonce
+      }
+    });
+    litellmReadyCheck.node.addDependency(microvmImage);
+    litellmReadyCheck.node.addDependency(api.deploymentStage);
 
     new cdk.CfnOutput(this, "MicrovmImageRef", {
       value: microvmImage.ref,
