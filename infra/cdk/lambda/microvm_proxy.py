@@ -1,0 +1,340 @@
+import base64
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "botocore_data")
+existing_data_path = os.environ.get("AWS_DATA_PATH")
+os.environ["AWS_DATA_PATH"] = MODEL_PATH if not existing_data_path else f"{MODEL_PATH}:{existing_data_path}"
+
+import boto3  # noqa: E402
+from botocore.exceptions import ClientError  # noqa: E402
+
+MICROVM_REGION = os.environ["MICROVM_REGION"]
+MICROVM_PORT = os.environ.get("MICROVM_PORT", "4000")
+TOKEN_EXPIRATION_MINUTES = int(os.environ.get("TOKEN_EXPIRATION_MINUTES", "60"))
+TOKEN_REFRESH_MARGIN_SECONDS = 120
+
+MICROVM_IMAGE_IDENTIFIER = os.environ["MICROVM_IMAGE_IDENTIFIER"]
+MICROVM_EXECUTION_ROLE_ARN = os.environ["MICROVM_EXECUTION_ROLE_ARN"]
+MICROVM_INGRESS_CONNECTOR_ARN = os.environ.get(
+    "MICROVM_INGRESS_CONNECTOR_ARN",
+    f"arn:aws:lambda:{MICROVM_REGION}:aws:network-connector:aws-network-connector:ALL_INGRESS",
+)
+MICROVM_EGRESS_CONNECTOR_ARN = os.environ.get("MICROVM_EGRESS_CONNECTOR_ARN")
+MICROVM_IMAGE_VERSION = os.environ.get("MICROVM_IMAGE_VERSION")
+
+_client = boto3.client("lambda-microvms", region_name=MICROVM_REGION)
+_core_client = boto3.client("lambda-core", region_name=MICROVM_REGION)
+_cache: dict[str, Any] = {
+    "token": None,
+    "token_expires_at": 0.0,
+    "microvm_id": None,
+    "microvm_endpoint": None,
+    "egress_connector_arn": None,
+}
+
+NETWORK_CONNECTOR_NAME = os.environ.get("NETWORK_CONNECTOR_NAME", "litellm-db-egress")
+NETWORK_CONNECTOR_SUBNET_IDS = [item for item in os.environ.get("NETWORK_CONNECTOR_SUBNET_IDS", "").split(",") if item]
+NETWORK_CONNECTOR_SECURITY_GROUP_IDS = [
+    item for item in os.environ.get("NETWORK_CONNECTOR_SECURITY_GROUP_IDS", "").split(",") if item
+]
+NETWORK_CONNECTOR_OPERATOR_ROLE_ARN = os.environ.get("NETWORK_CONNECTOR_OPERATOR_ROLE_ARN")
+PROXY_CACHE_TABLE_NAME = os.environ.get("PROXY_CACHE_TABLE_NAME")
+MICROVM_MAX_DURATION_SECONDS = 28800
+MICROVM_CACHE_KEY = "microvm-proxy-state"
+
+_dynamodb = boto3.client("dynamodb", region_name=MICROVM_REGION) if PROXY_CACHE_TABLE_NAME else None
+
+
+def _load_cache_from_dynamodb() -> None:
+    if _cache.get("dynamodb_loaded"):
+        return
+    _cache["dynamodb_loaded"] = True
+    if not _dynamodb or not PROXY_CACHE_TABLE_NAME:
+        return
+
+    response = _dynamodb.get_item(
+        TableName=PROXY_CACHE_TABLE_NAME,
+        Key={"pk": {"S": MICROVM_CACHE_KEY}},
+        ConsistentRead=False,
+    )
+    item = response.get("Item")
+    if not item:
+        return
+
+    now = time.time()
+    token_expires_at = float(item.get("token_expires_at", {}).get("N", "0") or 0)
+    if token_expires_at > now:
+        token = item.get("token", {}).get("S")
+        if token:
+            _cache["token"] = token
+            _cache["token_expires_at"] = token_expires_at
+
+    microvm_expires_at = float(item.get("microvm_expires_at", {}).get("N", "0") or 0)
+    if microvm_expires_at > now:
+        microvm_id = item.get("microvm_id", {}).get("S")
+        microvm_endpoint = item.get("microvm_endpoint", {}).get("S")
+        if microvm_id and microvm_endpoint:
+            _cache["microvm_id"] = microvm_id
+            _cache["microvm_endpoint"] = microvm_endpoint
+            _cache["microvm_expires_at"] = microvm_expires_at
+
+    egress_connector_arn = item.get("egress_connector_arn", {}).get("S")
+    if egress_connector_arn:
+        _cache["egress_connector_arn"] = egress_connector_arn
+
+
+def _persist_cache_to_dynamodb() -> None:
+    if not _dynamodb or not PROXY_CACHE_TABLE_NAME:
+        return
+
+    now = int(time.time())
+    token_expires_at = int(float(_cache.get("token_expires_at") or 0))
+    microvm_expires_at = int(float(_cache.get("microvm_expires_at") or 0))
+    ttl_expires_at = max(now + 300, token_expires_at, microvm_expires_at)
+
+    item: dict[str, Any] = {"pk": {"S": MICROVM_CACHE_KEY}, "expires_at": {"N": str(ttl_expires_at)}}
+    if _cache.get("token"):
+        item["token"] = {"S": str(_cache["token"])}
+    if token_expires_at > 0:
+        item["token_expires_at"] = {"N": str(token_expires_at)}
+    if _cache.get("microvm_id"):
+        item["microvm_id"] = {"S": str(_cache["microvm_id"])}
+    if _cache.get("microvm_endpoint"):
+        item["microvm_endpoint"] = {"S": str(_cache["microvm_endpoint"])}
+    if microvm_expires_at > 0:
+        item["microvm_expires_at"] = {"N": str(microvm_expires_at)}
+    if _cache.get("egress_connector_arn"):
+        item["egress_connector_arn"] = {"S": str(_cache["egress_connector_arn"])}
+
+    _dynamodb.put_item(TableName=PROXY_CACHE_TABLE_NAME, Item=item)
+
+
+def _ensure_vpc_egress_connector() -> str | None:
+    _load_cache_from_dynamodb()
+    if MICROVM_EGRESS_CONNECTOR_ARN:
+        return MICROVM_EGRESS_CONNECTOR_ARN
+
+    if not NETWORK_CONNECTOR_SUBNET_IDS or not NETWORK_CONNECTOR_SECURITY_GROUP_IDS or not NETWORK_CONNECTOR_OPERATOR_ROLE_ARN:
+        return None
+
+    cached_arn = _cache.get("egress_connector_arn")
+    if cached_arn:
+        return str(cached_arn)
+
+    paginator = _core_client.get_paginator("list_network_connectors")
+    for page in paginator.paginate():
+        for item in page.get("NetworkConnectors", []):
+            if item.get("Name") == NETWORK_CONNECTOR_NAME:
+                arn = item["Arn"]
+                state = item.get("State")
+                if state != "ACTIVE":
+                    for _ in range(60):
+                        detail = _core_client.get_network_connector(Identifier=arn)
+                        state = detail.get("State")
+                        if state == "ACTIVE":
+                            break
+                        if state in {"FAILED", "DELETE_FAILED"}:
+                            raise RuntimeError(f"Network connector failed: {detail.get('StateReason', 'unknown')}")
+                        time.sleep(1)
+                    if state != "ACTIVE":
+                        raise RuntimeError("Timed out waiting for network connector to become ACTIVE")
+                _cache["egress_connector_arn"] = arn
+                _persist_cache_to_dynamodb()
+                return arn
+
+    create_resp = _core_client.create_network_connector(
+        Name=NETWORK_CONNECTOR_NAME,
+        Configuration={
+            "VpcEgressConfiguration": {
+                "SubnetIds": NETWORK_CONNECTOR_SUBNET_IDS,
+                "SecurityGroupIds": NETWORK_CONNECTOR_SECURITY_GROUP_IDS,
+                "NetworkProtocol": "IPv4",
+                "AssociatedComputeResourceTypes": ["MicroVm"],
+            }
+        },
+        OperatorRole=NETWORK_CONNECTOR_OPERATOR_ROLE_ARN,
+    )
+    arn = create_resp["Arn"]
+    for _ in range(90):
+        detail = _core_client.get_network_connector(Identifier=arn)
+        state = detail.get("State")
+        if state == "ACTIVE":
+            _cache["egress_connector_arn"] = arn
+            _persist_cache_to_dynamodb()
+            return arn
+        if state in {"FAILED", "DELETE_FAILED"}:
+            raise RuntimeError(f"Network connector failed: {detail.get('StateReason', 'unknown')}")
+        time.sleep(1)
+    raise RuntimeError("Timed out waiting for created network connector to become ACTIVE")
+
+
+def _ensure_running_microvm() -> tuple[str, str]:
+    _load_cache_from_dynamodb()
+
+    def matches_image_identifier(image_arn: str) -> bool:
+        if MICROVM_IMAGE_IDENTIFIER.startswith("arn:aws:lambda:"):
+            return image_arn == MICROVM_IMAGE_IDENTIFIER
+        return image_arn.endswith(f":microvm-image:{MICROVM_IMAGE_IDENTIFIER}")
+
+    def matches_required_egress(detail: dict[str, Any]) -> bool:
+        if not MICROVM_EGRESS_CONNECTOR_ARN:
+            return True
+        egress_connectors = detail.get("egressNetworkConnectors") or []
+        return MICROVM_EGRESS_CONNECTOR_ARN in egress_connectors
+
+    cached_id = _cache.get("microvm_id")
+    cached_endpoint = _cache.get("microvm_endpoint")
+    if cached_id and cached_endpoint:
+        try:
+            detail = _client.get_microvm(microvmIdentifier=str(cached_id))
+            state = detail["state"]
+            if state == "RUNNING" and matches_required_egress(detail):
+                return str(cached_id), str(cached_endpoint)
+        except ClientError:
+            pass
+
+    paginator = _client.get_paginator("list_microvms")
+    for page in paginator.paginate():
+        for item in page.get("items", []):
+            if matches_image_identifier(item.get("imageArn", "")) and item.get("state") == "RUNNING":
+                microvm_id = item["microvmId"]
+                detail = _client.get_microvm(microvmIdentifier=microvm_id)
+                if not matches_required_egress(detail):
+                    _client.terminate_microvm(microvmIdentifier=microvm_id)
+                    continue
+                endpoint = detail["endpoint"]
+                _cache["microvm_id"] = microvm_id
+                _cache["microvm_endpoint"] = endpoint
+                _cache["microvm_expires_at"] = time.time() + MICROVM_MAX_DURATION_SECONDS
+                _persist_cache_to_dynamodb()
+                return microvm_id, endpoint
+
+    run_args: dict[str, Any] = {
+        "imageIdentifier": MICROVM_IMAGE_IDENTIFIER,
+        "executionRoleArn": MICROVM_EXECUTION_ROLE_ARN,
+        "ingressNetworkConnectors": [MICROVM_INGRESS_CONNECTOR_ARN],
+        "idlePolicy": {
+            "autoResumeEnabled": True,
+            "maxIdleDurationSeconds": 900,
+            "suspendedDurationSeconds": 28800,
+        },
+        "maximumDurationInSeconds": 28800,
+    }
+    if MICROVM_IMAGE_VERSION:
+        run_args["imageVersion"] = MICROVM_IMAGE_VERSION
+    egress_connector_arn = _ensure_vpc_egress_connector()
+    if egress_connector_arn and egress_connector_arn != MICROVM_EGRESS_CONNECTOR_ARN:
+        raise RuntimeError("Resolved VPC egress connector does not match MICROVM_EGRESS_CONNECTOR_ARN")
+    if egress_connector_arn:
+        run_args["egressNetworkConnectors"] = [egress_connector_arn]
+
+    run_resp = _client.run_microvm(**run_args)
+    microvm_id = run_resp["microvmId"]
+
+    for _ in range(60):
+        detail = _client.get_microvm(microvmIdentifier=microvm_id)
+        state = detail["state"]
+        if state == "RUNNING":
+            endpoint = detail["endpoint"]
+            _cache["microvm_id"] = microvm_id
+            _cache["microvm_endpoint"] = endpoint
+            _cache["microvm_expires_at"] = time.time() + MICROVM_MAX_DURATION_SECONDS
+            _persist_cache_to_dynamodb()
+            return microvm_id, endpoint
+        if state in {"TERMINATED", "TERMINATING"}:
+            raise RuntimeError(f"MicroVM terminated during startup: {detail.get('stateReason', 'unknown')}")
+        time.sleep(1)
+
+    raise RuntimeError("Timed out waiting for MicroVM to become RUNNING")
+
+
+def _create_microvm_auth_token(microvm_id: str) -> str:
+    _load_cache_from_dynamodb()
+    now = time.time()
+    cached_token = _cache.get("token")
+    expires_at = float(_cache.get("token_expires_at") or 0)
+    if cached_token and now < (expires_at - TOKEN_REFRESH_MARGIN_SECONDS):
+        return str(cached_token)
+
+    resp = _client.create_microvm_auth_token(
+        microvmIdentifier=microvm_id,
+        expirationInMinutes=TOKEN_EXPIRATION_MINUTES,
+        allowedPorts=[{"port": int(MICROVM_PORT)}],
+    )
+    token = resp["authToken"]["X-aws-proxy-auth"]
+    _cache["token"] = token
+    _cache["token_expires_at"] = now + (TOKEN_EXPIRATION_MINUTES * 60)
+    _persist_cache_to_dynamodb()
+    return str(token)
+
+
+def _forward_to_microvm(event: dict) -> dict:
+    microvm_id, microvm_endpoint = _ensure_running_microvm()
+    method = event.get("httpMethod", "GET")
+    path = event.get("path", "/")
+    query = event.get("queryStringParameters") or {}
+    query_string = urllib.parse.urlencode(query, doseq=True)
+    url = f"https://{microvm_endpoint}{path}"
+    if query_string:
+        url = f"{url}?{query_string}"
+
+    raw_headers = event.get("headers") or {}
+    forwarded_headers = {str(k): str(v) for k, v in raw_headers.items() if v is not None}
+    for blocked_header in [
+        "host",
+        "connection",
+        "content-length",
+        "transfer-encoding",
+        "x-amzn-trace-id",
+        "x-aws-proxy-auth",
+        "x-aws-proxy-port",
+        "x-api-key",
+    ]:
+        forwarded_headers.pop(blocked_header, None)
+        forwarded_headers.pop(blocked_header.title(), None)
+
+    forwarded_headers["X-aws-proxy-auth"] = _create_microvm_auth_token(microvm_id)
+    forwarded_headers["X-aws-proxy-port"] = MICROVM_PORT
+
+    body = event.get("body")
+    request_body = None
+    if body is not None:
+        if event.get("isBase64Encoded", False):
+            request_body = base64.b64decode(body)
+        else:
+            request_body = body.encode("utf-8")
+
+    request = urllib.request.Request(
+        url=url,
+        data=request_body,
+        headers=forwarded_headers,
+        method=method,
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response_bytes = response.read()
+            response_headers = dict(response.headers.items())
+            return {
+                "statusCode": response.status,
+                "isBase64Encoded": False,
+                "headers": response_headers,
+                "body": response_bytes.decode("utf-8"),
+            }
+    except urllib.error.HTTPError as error:
+        error_body = error.read()
+        return {
+            "statusCode": error.code,
+            "isBase64Encoded": False,
+            "headers": dict(error.headers.items()) if error.headers else {},
+            "body": error_body.decode("utf-8"),
+        }
+
+
+def handler(event, context):
+    return _forward_to_microvm(event)

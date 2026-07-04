@@ -129,6 +129,29 @@ curl -X POST 'http://localhost:4000/key/generate' \
   }'
 ```
 
+### CDK deployment auth flow (2 keys required)
+When using the CDK stack API endpoint, `/key/generate` requires both:
+* API Gateway usage-plan key in `x-api-key`
+* LiteLLM master key in `Authorization: Bearer <master-key>`
+
+Example:
+```bash
+curl -X POST 'https://<api-id>.execute-api.<region>.amazonaws.com/prod/key/generate' \
+  -H 'x-api-key: <aws-api-gateway-key>' \
+  -H 'Authorization: Bearer <litellm-master-key>' \
+  -H 'Content-Type: application/json' \
+  --data-raw '{"duration":"24h","key_alias":"user-key-1"}'
+```
+
+Then call models with the generated user key:
+```bash
+curl -X POST 'https://<api-id>.execute-api.<region>.amazonaws.com/prod/chat/completions' \
+  -H 'x-api-key: <aws-api-gateway-key>' \
+  -H 'Authorization: Bearer <litellm-user-key>' \
+  -H 'Content-Type: application/json' \
+  --data-raw '{"model":"nova-2-lite","messages":[{"role":"user","content":"hello"}]}'
+```
+
 
 ## Model Config in OpenClaw
 
@@ -375,3 +398,94 @@ Run the included test script:
 ./test_litellm.sh
 ```
 To test specific models, use `curl` or `openclaw models set litellm/<model-alias>`.
+
+## ☁️ CDK: Private Bedrock-only MicroVM + Aurora
+
+This repository now includes a CDK stack at `infra/cdk` for the private architecture:
+
+`Client -> Public API Gateway (Usage Plan + API Key) -> Lambda auth proxy -> Lambda MicroVM (LiteLLM) -> Aurora Serverless + Bedrock endpoints`
+
+### What it creates
+* VPC with public app subnets + isolated DB subnets (default), or private app subnets + NAT (private mode)
+* Aurora PostgreSQL Serverless v2
+* Public API Gateway + Usage Plan + API Key + Lambda proxy (injects `X-aws-proxy-auth` to MicroVM)
+* VPC endpoints for Bedrock, Secrets Manager, KMS, STS, CloudWatch Logs, plus S3 gateway endpoint
+* IAM roles and S3 artifact bucket for MicroVM image/build flow
+* DynamoDB cache table for proxy MicroVM/token state with TTL
+
+### Deploy
+Deploy everything in one command (default creates MicroVM image from `infra/cdk/microvm-image`):
+```bash
+cd infra/cdk
+npm install
+npx cdk deploy \
+  -c microvmRegion=<microvm-region> \
+  -c apiGatewayApiKeyValue=<long-random-key> \
+  -c microvmDeployPhase=runtime \
+  -c publicMicrovm=true
+```
+
+Optional: use your own pre-uploaded artifact instead of the default packaged one:
+```bash
+npx cdk deploy \
+  -c microvmRegion=<microvm-region> \
+  -c apiGatewayApiKeyValue=<long-random-key> \
+  -c microvmDeployPhase=runtime \
+  -c publicMicrovm=true \
+  -c microvmArtifactKey=images/litellm.zip
+```
+
+Private-mode option (MicroVM in private subnets with NAT + VPC endpoints):
+```bash
+npx cdk deploy \
+  -c microvmRegion=<microvm-region> \
+  -c apiGatewayApiKeyValue=<long-random-key> \
+  -c microvmDeployPhase=runtime \
+  -c publicMicrovm=false
+```
+
+Two-phase deploy (build then runtime switch):
+```bash
+cd infra/cdk
+./scripts/deploy-two-phase.sh \
+  --api-key <long-random-key> \
+  --region <microvm-region> \
+  --public-microvm true
+```
+
+### Important
+* The stack creates an `AWS::Lambda::MicrovmImage` resource natively via CDK/CloudFormation.
+* `publicMicrovm` controls network mode:
+  * `true` (default): MicroVM connector subnets are public (IGW route), no NAT.
+  * `false`: MicroVM connector subnets are private-with-egress and NAT is created.
+* `microvmDeployPhase` controls runtime egress selection:
+  * `build`: runtime uses `INTERNET_EGRESS` (for image/bootstrap phase).
+  * `runtime` (default): runtime uses VPC egress connector for Aurora path.
+* Current code behavior (`infra/cdk/bin/app.ts` + `infra/cdk/lib/private-litellm-microvm-stack.ts`):
+  * `runtimeUseInternetEgress = (microvmDeployPhase == "build")`.
+  * In `runtime` phase, stack-managed VPC connector is created unless `-c microvmEgressConnectorArn=<arn>` is provided.
+  * In `build` phase, runtime egress is forced to `INTERNET_EGRESS` (custom connector ARN is ignored by design).
+  * In `runtime` phase, `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected by guardrail in `app.ts`.
+* The image default egress connector stays `INTERNET_EGRESS`.
+* Runtime `RunMicrovm` egress uses the managed VPC connector for Aurora access.
+* Bedrock and other AWS service reachability at runtime comes through VPC endpoints.
+* Internet at runtime depends on mode:
+  * `runtime + publicMicrovm=true` (default): VPC egress connector ENIs are in public subnets without NAT, so this mode is for private targets (Aurora/VPC endpoints), not guaranteed arbitrary public internet.
+  * `runtime + publicMicrovm=false`: VPC egress connector ENIs are in private-with-egress subnets with NAT, so both private targets and public internet are available.
+  * `build` phase: uses Lambda-managed `INTERNET_EGRESS`.
+* The proxy no longer requires `microvmId` / `microvmEndpoint` input. It calls `ListMicrovms` and `RunMicrovm` automatically.
+* Proxy state (`microvm_id`, endpoint, token expiration) is cached in DynamoDB TTL table to reduce control-plane API calls across Lambda cold starts.
+* The MicroVM image now sets `LITELLM_MASTER_KEY` and `DATABASE_URL` automatically (master key is generated in Secrets Manager output `LiteLlmMasterKeySecretArn`).
+* The proxy uses the stack-managed MicroVM image and managed egress connector by default.
+* Optional override: `-c microvmEgressConnectorArn=<connector-arn>` to use an existing connector.
+* In `runtime` phase, `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected to avoid breaking Aurora connectivity.
+* Client authentication stays at LiteLLM application level; AWS proxy headers are injected only inside the private proxy hop.
+* Current API invoke URL is stage-based (`/prod`). Add API custom domain + mapping if you want root path without stage prefix.
+
+### Deployment hack for `AWS::Lambda::MicrovmImage` stabilization
+`AWS::Lambda::MicrovmImage` can intermittently fail CloudFormation stabilization with `NotStabilized`, even when a newer image version is later created and becomes usable.
+
+Practical workaround used in this repo:
+1. Retry `npx cdk deploy` when only the MicroVM image resource fails stabilization.
+2. Verify the latest image version and runtime logs under `/aws/lambda-microvms/<image-name>`.
+3. Keep core networking/database changes separate from image-change retries so infra updates are not blocked by image stabilization races.

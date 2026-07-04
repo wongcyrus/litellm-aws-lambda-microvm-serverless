@@ -1,0 +1,5 @@
+model_list:
+  - model_name: nova-2-lite
+    litellm_params:
+      model: bedrock/global.amazon.nova-2-lite-v1:0
+      aws_region_name: "us-east-1"

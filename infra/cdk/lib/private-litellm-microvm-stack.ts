@@ -1,0 +1,393 @@
+import * as path from "node:path";
+import * as cdk from "aws-cdk-lib";
+import { Construct } from "constructs";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as apigateway from "aws-cdk-lib/aws-apigateway";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as logs from "aws-cdk-lib/aws-logs";
+import * as rds from "aws-cdk-lib/aws-rds";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as s3assets from "aws-cdk-lib/aws-s3-assets";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+
+export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
+  microvmRegion: string;
+  microvmArtifactKey?: string;
+  microvmEgressConnectorArn?: string;
+  runtimeUseInternetEgress: boolean;
+  publicMicrovm: boolean;
+  apiGatewayApiKeyValue: string;
+}
+
+export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: PrivateLiteLlmMicrovmStackProps) {
+    super(scope, id, props);
+
+    const microvmImageName = `${this.stackName}-litellm-bedrock-private`;
+    const resolvedMicrovmImageIdentifier = `arn:aws:lambda:${props.microvmRegion}:${this.account}:microvm-image:${microvmImageName}`;
+
+    const subnetConfiguration: ec2.SubnetConfiguration[] = props.publicMicrovm
+      ? [
+          { name: "AppPublic", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
+          { name: "DbPrivate", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }
+        ]
+      : [
+          { name: "AppPublic", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
+          { name: "AppPrivate", subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
+          { name: "DbPrivate", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }
+        ];
+
+    const appVpc = new ec2.Vpc(this, "AppVpc", {
+      natGateways: props.publicMicrovm ? 0 : 1,
+      maxAzs: 2,
+      subnetConfiguration
+    });
+
+    const microvmSubnetGroupName = props.publicMicrovm ? "AppPublic" : "AppPrivate";
+    const microvmSubnets = appVpc.selectSubnets({ subnetGroupName: microvmSubnetGroupName });
+
+    const connectorSecurityGroup = new ec2.SecurityGroup(this, "MicrovmConnectorSecurityGroup", {
+      vpc: appVpc,
+      description: "Security group to attach to Lambda MicroVM VPC egress connector",
+      allowAllOutbound: true
+    });
+
+    const artifactBucket = new s3.Bucket(this, "MicrovmArtifactsBucket", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true
+    });
+
+    const endpointSecurityGroup = new ec2.SecurityGroup(this, "VpcEndpointSecurityGroup", {
+      vpc: appVpc,
+      description: "Security group for private interface endpoints",
+      allowAllOutbound: true
+    });
+
+    endpointSecurityGroup.addIngressRule(
+      connectorSecurityGroup,
+      ec2.Port.tcp(443),
+      "Allow connector traffic to AWS private endpoints"
+    );
+
+    const interfaceServices = ["bedrock-runtime", "bedrock", "secretsmanager", "kms", "logs", "sts"];
+    for (const service of interfaceServices) {
+      new ec2.InterfaceVpcEndpoint(this, `${toPascalCase(service)}Endpoint`, {
+        vpc: appVpc,
+        service: new ec2.InterfaceVpcEndpointService(`com.amazonaws.${this.region}.${service}`, 443),
+        privateDnsEnabled: true,
+        securityGroups: [endpointSecurityGroup],
+        subnets: { subnetGroupName: microvmSubnetGroupName }
+      });
+    }
+
+    appVpc.addGatewayEndpoint("S3GatewayEndpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+      subnets: [{ subnetGroupName: microvmSubnetGroupName }]
+    });
+
+    const dbSecurityGroup = new ec2.SecurityGroup(this, "AuroraSecurityGroup", {
+      vpc: appVpc,
+      description: "Aurora ingress from MicroVM connector only",
+      allowAllOutbound: true
+    });
+    dbSecurityGroup.addIngressRule(connectorSecurityGroup, ec2.Port.tcp(5432), "Allow Aurora from connector");
+
+    const dbCluster = new rds.DatabaseCluster(this, "LiteLlmAuroraCluster", {
+      engine: rds.DatabaseClusterEngine.auroraPostgres({
+        version: rds.AuroraPostgresEngineVersion.VER_16_4
+      }),
+      writer: rds.ClusterInstance.serverlessV2("writer"),
+      serverlessV2MinCapacity: 0,
+      serverlessV2MaxCapacity: 2,
+      defaultDatabaseName: "litellm",
+      credentials: rds.Credentials.fromGeneratedSecret("litellm", {
+        excludeCharacters: " %+~`#$&*()|[]{}:;<>?!'/@\"\\="
+      }),
+      vpc: appVpc,
+      vpcSubnets: { subnetGroupName: "DbPrivate" },
+      securityGroups: [dbSecurityGroup],
+      storageEncrypted: true,
+      cloudwatchLogsExports: ["postgresql"]
+    });
+
+    const litellmMasterKeySecret = new secretsmanager.Secret(this, "LiteLlmMasterKeySecret", {
+      generateSecretString: { excludePunctuation: true, passwordLength: 48 }
+    });
+    const proxyCacheTable = new dynamodb.Table(this, "MicrovmProxyCacheTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "expires_at",
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true }
+    });
+
+    const microvmBuildRole = new iam.Role(this, "MicrovmBuildRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com")
+    });
+    microvmBuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:GetObject"],
+        resources: [artifactBucket.arnForObjects("*")]
+      })
+    );
+    microvmBuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+        resources: ["*"]
+      })
+    );
+    microvmBuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:BatchImportUpstreamImage",
+          "ecr:CreateRepository",
+          "ecr:DescribeRepositories",
+          "ecr-public:GetAuthorizationToken",
+          "ecr-public:BatchCheckLayerAvailability",
+          "ecr-public:GetDownloadUrlForLayer",
+          "ecr-public:BatchGetImage"
+        ],
+        resources: ["*"]
+      })
+    );
+
+    const microvmExecutionRole = new iam.Role(this, "MicrovmExecutionRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com")
+    });
+    microvmExecutionRole.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"));
+    microvmExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+        resources: ["*"]
+      })
+    );
+    dbCluster.secret?.grantRead(microvmExecutionRole);
+
+    const connectorOperatorRole = new iam.Role(this, "NetworkConnectorOperatorRole", {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com")
+    });
+    connectorOperatorRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "ec2:CreateNetworkInterface",
+          "ec2:DeleteNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:AssignPrivateIpAddresses",
+          "ec2:UnassignPrivateIpAddresses",
+          "ec2:CreateTags"
+        ],
+        resources: ["*"]
+      })
+    );
+
+    const managedEgressConnector = props.microvmEgressConnectorArn || props.runtimeUseInternetEgress
+      ? undefined
+      : new cdk.CfnResource(this, "MicrovmDbEgressConnector", {
+          type: "AWS::Lambda::NetworkConnector",
+          properties: {
+            Configuration: {
+              VpcEgressConfiguration: {
+                SubnetIds: microvmSubnets.subnetIds,
+                SecurityGroupIds: [connectorSecurityGroup.securityGroupId],
+                NetworkProtocol: "IPv4",
+                AssociatedComputeResourceTypes: ["MicroVm"]
+              }
+            },
+            OperatorRole: connectorOperatorRole.roleArn
+          }
+        });
+    const resolvedEgressConnectorArn = props.microvmEgressConnectorArn ?? managedEgressConnector?.getAtt("Arn").toString();
+    const imageDefaultEgressConnectorArn = `arn:aws:lambda:${props.microvmRegion}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`;
+    const runtimeEgressConnectorArn = props.runtimeUseInternetEgress
+      ? imageDefaultEgressConnectorArn
+      : resolvedEgressConnectorArn!;
+
+    const proxyLogGroup = new logs.LogGroup(this, "MicrovmAuthProxyLogGroup", {
+      retention: logs.RetentionDays.ONE_MONTH
+    });
+    const proxyFunction = new lambda.Function(this, "MicrovmAuthProxyFunction", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "microvm_proxy.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda")),
+      timeout: cdk.Duration.seconds(29),
+      memorySize: 256,
+      reservedConcurrentExecutions: 1,
+      logGroup: proxyLogGroup,
+      environment: {
+        MICROVM_REGION: props.microvmRegion,
+        MICROVM_PORT: "4000",
+        TOKEN_EXPIRATION_MINUTES: "60",
+        PROXY_DEPLOY_REV: "3",
+        MICROVM_IMAGE_IDENTIFIER: resolvedMicrovmImageIdentifier,
+        MICROVM_EXECUTION_ROLE_ARN: microvmExecutionRole.roleArn,
+        MICROVM_INGRESS_CONNECTOR_ARN: `arn:aws:lambda:${props.microvmRegion}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
+        NETWORK_CONNECTOR_NAME: "litellm-db-egress",
+        NETWORK_CONNECTOR_SUBNET_IDS: microvmSubnets.subnetIds.join(","),
+        NETWORK_CONNECTOR_SECURITY_GROUP_IDS: connectorSecurityGroup.securityGroupId,
+        NETWORK_CONNECTOR_OPERATOR_ROLE_ARN: connectorOperatorRole.roleArn,
+        MICROVM_EGRESS_CONNECTOR_ARN: runtimeEgressConnectorArn,
+        PROXY_CACHE_TABLE_NAME: proxyCacheTable.tableName
+      }
+    });
+    proxyCacheTable.grantReadWriteData(proxyFunction);
+    proxyFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "lambda:CreateMicrovmAuthToken",
+          "lambda:ListMicrovms",
+          "lambda:GetMicrovm",
+          "lambda:RunMicrovm",
+          "lambda:PassNetworkConnector",
+          "lambda:CreateNetworkConnector",
+          "lambda:ListNetworkConnectors",
+          "lambda:GetNetworkConnector",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSubnets"
+        ],
+        resources: [
+          "*",
+          `arn:aws:lambda:${props.microvmRegion}:aws:network-connector:aws-network-connector:ALL_INGRESS`,
+          `arn:aws:lambda:${props.microvmRegion}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`,
+          ...(props.microvmEgressConnectorArn ? [props.microvmEgressConnectorArn] : [])
+        ]
+      })
+    );
+    proxyFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["iam:PassRole"],
+        resources: ["*"]
+      })
+    );
+    proxyFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["iam:CreateServiceLinkedRole"],
+        resources: ["*"],
+        conditions: {
+          StringEquals: { "iam:AWSServiceName": "lambda.amazonaws.com" }
+        }
+      })
+    );
+
+    const api = new apigateway.RestApi(this, "PublicLiteLlmApi", {
+      restApiName: "litellm-public-proxy",
+      endpointConfiguration: { types: [apigateway.EndpointType.REGIONAL] },
+      deployOptions: { stageName: "prod" }
+    });
+    const proxyIntegration = new apigateway.LambdaIntegration(proxyFunction, { proxy: true });
+    api.root.addMethod("ANY", proxyIntegration, { apiKeyRequired: true });
+    const greedyProxy = api.root.addResource("{proxy+}");
+    greedyProxy.addMethod("ANY", proxyIntegration, { apiKeyRequired: true });
+
+    const usagePlan = api.addUsagePlan("PublicLiteLlmUsagePlan", {
+      name: "litellm-public-usage-plan",
+      throttle: { rateLimit: 10, burstLimit: 20 },
+      quota: { limit: 500000, period: apigateway.Period.MONTH }
+    });
+    const awsGatewayApiKey = api.addApiKey("AwsGatewayApiKey", {
+      apiKeyName: "litellm-aws-gateway-key",
+      value: props.apiGatewayApiKeyValue
+    });
+    usagePlan.addApiKey(awsGatewayApiKey);
+    usagePlan.addApiStage({ stage: api.deploymentStage });
+
+    new cdk.CfnOutput(this, "PublicApiInvokeUrl", {
+      value: api.url,
+      description: "Public API Gateway URL (append LiteLLM root paths after stage)"
+    });
+    new cdk.CfnOutput(this, "AwsGatewayApiKeyId", {
+      value: awsGatewayApiKey.keyId,
+      description: "API Gateway key id for the first protection layer"
+    });
+
+    let artifactUri: string;
+    if (props.microvmArtifactKey) {
+      artifactUri = `s3://${artifactBucket.bucketName}/${props.microvmArtifactKey}`;
+    } else {
+      const defaultArtifact = new s3assets.Asset(this, "DefaultMicrovmImageArtifact", {
+        path: path.join(__dirname, "..", "microvm-image")
+      });
+      artifactUri = defaultArtifact.s3ObjectUrl;
+      defaultArtifact.grantRead(microvmBuildRole);
+    }
+
+    const microvmImage = new cdk.CfnResource(this, "LiteLlmMicrovmImage", {
+      type: "AWS::Lambda::MicrovmImage",
+      properties: {
+        Name: microvmImageName,
+        Description: "LiteLLM Bedrock private image",
+        BaseImageArn: `arn:aws:lambda:${props.microvmRegion}:aws:microvm-image:al2023-1`,
+        BaseImageVersion: "0",
+        BuildRoleArn: microvmBuildRole.roleArn,
+        CodeArtifact: { Uri: artifactUri },
+        AdditionalOsCapabilities: ["ALL"],
+        CpuConfigurations: [{ Architecture: "ARM_64" }],
+        Resources: [{ MinimumMemoryInMiB: 2048 }],
+        EgressNetworkConnectors: [imageDefaultEgressConnectorArn],
+        EnvironmentVariables: [
+          {
+            Key: "DATABASE_URL",
+            Value: cdk.Fn.join("", [
+              "postgresql://",
+              dbCluster.secret!.secretValueFromJson("username").toString(),
+              ":",
+              dbCluster.secret!.secretValueFromJson("password").toString(),
+              "@",
+              dbCluster.clusterEndpoint.hostname,
+              ":5432/litellm"
+            ])
+          },
+          { Key: "LITELLM_MASTER_KEY", Value: litellmMasterKeySecret.secretValue.toString() },
+          { Key: "STORE_MODEL_IN_DB", Value: "True" },
+          { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" }
+        ],
+        Hooks: {},
+        Logging: {
+          CloudWatch: { LogGroup: cdk.Fn.join("", ["/aws/lambda-microvms/", microvmImageName]) }
+        }
+      }
+    });
+
+    new cdk.CfnOutput(this, "MicrovmImageRef", {
+      value: microvmImage.ref,
+      description: "CloudFormation reference for AWS::Lambda::MicrovmImage"
+    });
+    new cdk.CfnOutput(this, "AuroraEndpoint", { value: dbCluster.clusterEndpoint.hostname });
+    if (dbCluster.secret) {
+      new cdk.CfnOutput(this, "AuroraSecretArn", { value: dbCluster.secret.secretArn });
+      new cdk.CfnOutput(this, "LiteLlmMasterKeySecretArn", { value: litellmMasterKeySecret.secretArn });
+    }
+    new cdk.CfnOutput(this, "MicrovmConnectorSubnetIds", {
+      value: microvmSubnets.subnetIds.join(","),
+      description: "Use these subnets for Lambda MicroVM VPC egress connector"
+    });
+    new cdk.CfnOutput(this, "MicrovmSubnetMode", {
+      value: props.publicMicrovm ? "public" : "private-with-nat",
+      description: "MicroVM subnet mode selected by publicMicrovm context"
+    });
+    new cdk.CfnOutput(this, "MicrovmConnectorSecurityGroupId", {
+      value: connectorSecurityGroup.securityGroupId,
+      description: "Attach this SG to Lambda MicroVM VPC egress connector"
+    });
+    new cdk.CfnOutput(this, "MicrovmBuildRoleArn", { value: microvmBuildRole.roleArn });
+    new cdk.CfnOutput(this, "MicrovmExecutionRoleArn", { value: microvmExecutionRole.roleArn });
+    new cdk.CfnOutput(this, "MicrovmArtifactBucketName", { value: artifactBucket.bucketName });
+    new cdk.CfnOutput(this, "NetworkConnectorOperatorRoleArn", { value: connectorOperatorRole.roleArn });
+    new cdk.CfnOutput(this, "MicrovmProxyCacheTableName", { value: proxyCacheTable.tableName });
+  }
+}
+
+function toPascalCase(value: string): string {
+  return value
+    .split(/[^a-zA-Z0-9]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+}
