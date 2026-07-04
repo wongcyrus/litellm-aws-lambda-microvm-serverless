@@ -15,8 +15,7 @@ Env alternatives:
   API_GATEWAY_API_KEY_VALUE, MICROVM_REGION, PUBLIC_MICROVM, STACK_NAME
 
 Behavior:
-  1) Phase build   : microvmDeployPhase=build   (runtime uses INTERNET_EGRESS)
-  2) Phase runtime : microvmDeployPhase=runtime (runtime uses VPC connector)
+  Single-phase deploy (runtime always uses VPC egress connector).
 EOF
 }
 
@@ -55,18 +54,10 @@ if [[ -z "$API_GATEWAY_API_KEY_VALUE" ]]; then
   exit 1
 fi
 
-echo "Phase 1/2: build (INTERNET_EGRESS runtime)"
+echo "Single-phase deploy"
 npx cdk deploy "$STACK_NAME" --require-approval never \
   -c microvmRegion="$MICROVM_REGION" \
   -c apiGatewayApiKeyValue="$API_GATEWAY_API_KEY_VALUE" \
-  -c publicMicrovm="$PUBLIC_MICROVM" \
-  -c microvmDeployPhase=build
+  -c publicMicrovm="$PUBLIC_MICROVM"
 
-echo "Phase 2/2: runtime (VPC runtime egress)"
-npx cdk deploy "$STACK_NAME" --require-approval never \
-  -c microvmRegion="$MICROVM_REGION" \
-  -c apiGatewayApiKeyValue="$API_GATEWAY_API_KEY_VALUE" \
-  -c publicMicrovm="$PUBLIC_MICROVM" \
-  -c microvmDeployPhase=runtime
-
-echo "Two-phase deploy completed."
+echo "Single-phase deploy completed."

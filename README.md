@@ -411,6 +411,7 @@ This repository now includes a CDK stack at `infra/cdk` for the private architec
 * Public API Gateway + Usage Plan + API Key + Lambda proxy (injects `X-aws-proxy-auth` to MicroVM)
 * VPC endpoints for Bedrock, Secrets Manager, KMS, STS, CloudWatch Logs, plus S3 gateway endpoint
 * IAM roles and S3 artifact bucket for MicroVM image/build flow
+* ECR repository + ARM64 CodeBuild project to mirror LiteLLM base image into private ECR
 * DynamoDB cache table for proxy MicroVM/token state with TTL
 
 ### Deploy
@@ -421,7 +422,6 @@ npm install
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
   -c apiGatewayApiKeyValue=<long-random-key> \
-  -c microvmDeployPhase=runtime \
   -c publicMicrovm=true
 ```
 
@@ -430,7 +430,6 @@ Optional: use your own pre-uploaded artifact instead of the default packaged one
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
   -c apiGatewayApiKeyValue=<long-random-key> \
-  -c microvmDeployPhase=runtime \
   -c publicMicrovm=true \
   -c microvmArtifactKey=images/litellm.zip
 ```
@@ -440,17 +439,32 @@ Private-mode option (MicroVM in private subnets with NAT + VPC endpoints):
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
   -c apiGatewayApiKeyValue=<long-random-key> \
-  -c microvmDeployPhase=runtime \
   -c publicMicrovm=false
 ```
 
-Two-phase deploy (build then runtime switch):
+Trial: use CodeBuild-mirrored private ECR base image (for machines that can't build ARM64):
+```bash
+# 1) Deploy infra (creates ECR + CodeBuild project outputs)
+npx cdk deploy \
+  -c microvmRegion=<microvm-region> \
+  -c apiGatewayApiKeyValue=<long-random-key> \
+  -c publicMicrovm=true
+
+# 2) Start mirror build (project name from output LiteLlmArm64MirrorCodeBuildProjectName)
+aws codebuild start-build --project-name <output-project-name>
+
+# 3) Redeploy and force MicroVM Dockerfile FROM to private ECR image
+npx cdk deploy \
+  -c microvmRegion=<microvm-region> \
+  -c apiGatewayApiKeyValue=<long-random-key> \
+  -c useCodebuildEcrBaseImage=true \
+  -c publicMicrovm=true
+```
+
+Destroy stack (including MicroVM cleanup):
 ```bash
 cd infra/cdk
-./scripts/deploy-two-phase.sh \
-  --api-key <long-random-key> \
-  --region <microvm-region> \
-  --public-microvm true
+API_GATEWAY_API_KEY_VALUE=<same-api-key-used-for-deploy> ./scripts/destroy-stack.sh
 ```
 
 ### Important
@@ -458,27 +472,25 @@ cd infra/cdk
 * `publicMicrovm` controls network mode:
   * `true` (default): MicroVM connector subnets are public (IGW route), no NAT.
   * `false`: MicroVM connector subnets are private-with-egress and NAT is created.
-* `microvmDeployPhase` controls runtime egress selection:
-  * `build`: runtime uses `INTERNET_EGRESS` (for image/bootstrap phase).
-  * `runtime` (default): runtime uses VPC egress connector for Aurora path.
 * Current code behavior (`infra/cdk/bin/app.ts` + `infra/cdk/lib/private-litellm-microvm-stack.ts`):
-  * `runtimeUseInternetEgress = (microvmDeployPhase == "build")`.
-  * In `runtime` phase, stack-managed VPC connector is created unless `-c microvmEgressConnectorArn=<arn>` is provided.
-  * In `build` phase, runtime egress is forced to `INTERNET_EGRESS` (custom connector ARN is ignored by design).
-  * In `runtime` phase, `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected by guardrail in `app.ts`.
+  * Single-phase deploy: runtime always uses VPC egress connector for Aurora path.
+  * Stack-managed VPC connector is created unless `-c microvmEgressConnectorArn=<arn>` is provided.
+  * `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected by guardrail in `app.ts`.
+  * `useCodebuildEcrBaseImage=true` rewrites MicroVM Dockerfile `FROM` at synth time to `<stack ECR repo>:main-stable`.
+  * `microvmContainerBaseImage=<uri>` overrides the Dockerfile base image explicitly (higher priority than `useCodebuildEcrBaseImage`).
+  * `scripts/destroy-stack.sh` terminates non-terminated MicroVMs for this stack image before calling `cdk destroy`.
 * The image default egress connector stays `INTERNET_EGRESS`.
 * Runtime `RunMicrovm` egress uses the managed VPC connector for Aurora access.
 * Bedrock and other AWS service reachability at runtime comes through VPC endpoints.
 * Internet at runtime depends on mode:
-  * `runtime + publicMicrovm=true` (default): VPC egress connector ENIs are in public subnets without NAT, so this mode is for private targets (Aurora/VPC endpoints), not guaranteed arbitrary public internet.
-  * `runtime + publicMicrovm=false`: VPC egress connector ENIs are in private-with-egress subnets with NAT, so both private targets and public internet are available.
-  * `build` phase: uses Lambda-managed `INTERNET_EGRESS`.
+  * `publicMicrovm=true` (default): VPC egress connector ENIs are in public subnets without NAT, so this mode is for private targets (Aurora/VPC endpoints), not guaranteed arbitrary public internet.
+  * `publicMicrovm=false`: VPC egress connector ENIs are in private-with-egress subnets with NAT, so both private targets and public internet are available.
 * The proxy no longer requires `microvmId` / `microvmEndpoint` input. It calls `ListMicrovms` and `RunMicrovm` automatically.
 * Proxy state (`microvm_id`, endpoint, token expiration) is cached in DynamoDB TTL table to reduce control-plane API calls across Lambda cold starts.
 * The MicroVM image now sets `LITELLM_MASTER_KEY` and `DATABASE_URL` automatically (master key is generated in Secrets Manager output `LiteLlmMasterKeySecretArn`).
 * The proxy uses the stack-managed MicroVM image and managed egress connector by default.
 * Optional override: `-c microvmEgressConnectorArn=<connector-arn>` to use an existing connector.
-* In `runtime` phase, `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected to avoid breaking Aurora connectivity.
+* `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected to avoid breaking Aurora connectivity.
 * Client authentication stays at LiteLLM application level; AWS proxy headers are injected only inside the private proxy hop.
 * Current API invoke URL is stage-based (`/prod`). Add API custom domain + mapping if you want root path without stage prefix.
 

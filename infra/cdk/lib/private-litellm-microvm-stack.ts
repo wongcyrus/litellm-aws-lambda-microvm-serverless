@@ -1,8 +1,12 @@
 import * as path from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
+import * as codebuild from "aws-cdk-lib/aws-codebuild";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -16,7 +20,8 @@ export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   microvmRegion: string;
   microvmArtifactKey?: string;
   microvmEgressConnectorArn?: string;
-  runtimeUseInternetEgress: boolean;
+  microvmContainerBaseImage?: string;
+  useCodebuildEcrBaseImage: boolean;
   publicMicrovm: boolean;
   apiGatewayApiKeyValue: string;
 }
@@ -57,7 +62,65 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     const artifactBucket = new s3.Bucket(this, "MicrovmArtifactsBucket", {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true
+      enforceSSL: true,
+      autoDeleteObjects: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+    const litellmBaseRepositoryName = "litellm-microvm-base";
+    const litellmBaseRepository = new ecr.Repository(this, "LiteLlmBaseRepository", {
+      repositoryName: litellmBaseRepositoryName,
+      imageScanOnPush: true,
+      emptyOnDelete: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+    const codebuildRole = new iam.Role(this, "LiteLlmMirrorCodeBuildRole", {
+      assumedBy: new iam.ServicePrincipal("codebuild.amazonaws.com")
+    });
+    codebuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+        resources: ["*"]
+      })
+    );
+    codebuildRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["ecr:GetAuthorizationToken"],
+        resources: ["*"]
+      })
+    );
+    litellmBaseRepository.grantPullPush(codebuildRole);
+    const litellmMirrorProjectName = `${this.stackName}-litellm-arm64-mirror`;
+    new codebuild.CfnProject(this, "LiteLlmArm64MirrorProject", {
+      name: litellmMirrorProjectName,
+      serviceRole: codebuildRole.roleArn,
+      source: {
+        type: "NO_SOURCE",
+        buildSpec: [
+          "version: 0.2",
+          "phases:",
+          "  pre_build:",
+          "    commands:",
+          "      - aws --version",
+          "      - aws ecr get-login-password --region \"$AWS_DEFAULT_REGION\" | docker login --username AWS --password-stdin \"${TARGET_IMAGE_URI%/*}\"",
+          "  build:",
+          "    commands:",
+          "      - docker pull --platform linux/arm64 \"$SOURCE_IMAGE\"",
+          "      - docker tag \"$SOURCE_IMAGE\" \"$TARGET_IMAGE_URI\"",
+          "      - docker push \"$TARGET_IMAGE_URI\"",
+        ].join("\n")
+      },
+      artifacts: { type: "NO_ARTIFACTS" },
+      environment: {
+        type: "LINUX_CONTAINER",
+        image: "aws/codebuild/standard:7.0",
+        computeType: "BUILD_GENERAL1_MEDIUM",
+        privilegedMode: true,
+        environmentVariables: [
+          { name: "SOURCE_IMAGE", value: "ghcr.io/berriai/litellm-database:main-stable", type: "PLAINTEXT" },
+          { name: "TARGET_IMAGE_URI", value: `${litellmBaseRepository.repositoryUri}:main-stable`, type: "PLAINTEXT" },
+          { name: "AWS_DEFAULT_REGION", value: this.region, type: "PLAINTEXT" }
+        ]
+      }
     });
 
     const endpointSecurityGroup = new ec2.SecurityGroup(this, "VpcEndpointSecurityGroup", {
@@ -109,6 +172,8 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       vpc: appVpc,
       vpcSubnets: { subnetGroupName: "DbPrivate" },
       securityGroups: [dbSecurityGroup],
+      deletionProtection: false,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
       storageEncrypted: true,
       cloudwatchLogsExports: ["postgresql"]
     });
@@ -120,8 +185,10 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "expires_at",
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true }
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      removalPolicy: cdk.RemovalPolicy.DESTROY
     });
+    litellmMasterKeySecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     const microvmBuildRole = new iam.Role(this, "MicrovmBuildRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com")
@@ -188,7 +255,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       })
     );
 
-    const managedEgressConnector = props.microvmEgressConnectorArn || props.runtimeUseInternetEgress
+    const managedEgressConnector = props.microvmEgressConnectorArn
       ? undefined
       : new cdk.CfnResource(this, "MicrovmDbEgressConnector", {
           type: "AWS::Lambda::NetworkConnector",
@@ -206,12 +273,11 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         });
     const resolvedEgressConnectorArn = props.microvmEgressConnectorArn ?? managedEgressConnector?.getAtt("Arn").toString();
     const imageDefaultEgressConnectorArn = `arn:aws:lambda:${props.microvmRegion}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`;
-    const runtimeEgressConnectorArn = props.runtimeUseInternetEgress
-      ? imageDefaultEgressConnectorArn
-      : resolvedEgressConnectorArn!;
+    const runtimeEgressConnectorArn = resolvedEgressConnectorArn!;
 
     const proxyLogGroup = new logs.LogGroup(this, "MicrovmAuthProxyLogGroup", {
-      retention: logs.RetentionDays.ONE_MONTH
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
     });
     const proxyFunction = new lambda.Function(this, "MicrovmAuthProxyFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -311,9 +377,19 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     if (props.microvmArtifactKey) {
       artifactUri = `s3://${artifactBucket.bucketName}/${props.microvmArtifactKey}`;
     } else {
-      const defaultArtifact = new s3assets.Asset(this, "DefaultMicrovmImageArtifact", {
-        path: path.join(__dirname, "..", "microvm-image")
-      });
+      const deployAccount = process.env.CDK_DEFAULT_ACCOUNT;
+      const mirroredBaseImage = deployAccount
+        ? `${deployAccount}.dkr.ecr.${props.microvmRegion}.amazonaws.com/${litellmBaseRepositoryName}:main-stable`
+        : undefined;
+      if (props.useCodebuildEcrBaseImage && !mirroredBaseImage && !props.microvmContainerBaseImage) {
+        throw new Error("CDK_DEFAULT_ACCOUNT is required for useCodebuildEcrBaseImage unless microvmContainerBaseImage is explicitly set.");
+      }
+      const selectedBaseImage = props.microvmContainerBaseImage ?? (props.useCodebuildEcrBaseImage ? mirroredBaseImage : undefined);
+      const microvmImageSourceDir = path.join(__dirname, "..", "microvm-image");
+      const artifactPath = selectedBaseImage
+        ? this.createMicrovmImageSourceWithBaseImage(microvmImageSourceDir, selectedBaseImage)
+        : microvmImageSourceDir;
+      const defaultArtifact = new s3assets.Asset(this, "DefaultMicrovmImageArtifact", { path: artifactPath });
       artifactUri = defaultArtifact.s3ObjectUrl;
       defaultArtifact.grantRead(microvmBuildRole);
     }
@@ -379,8 +455,21 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     new cdk.CfnOutput(this, "MicrovmBuildRoleArn", { value: microvmBuildRole.roleArn });
     new cdk.CfnOutput(this, "MicrovmExecutionRoleArn", { value: microvmExecutionRole.roleArn });
     new cdk.CfnOutput(this, "MicrovmArtifactBucketName", { value: artifactBucket.bucketName });
+    new cdk.CfnOutput(this, "LiteLlmBaseEcrRepositoryUri", { value: litellmBaseRepository.repositoryUri });
+    new cdk.CfnOutput(this, "LiteLlmArm64MirrorCodeBuildProjectName", { value: litellmMirrorProjectName });
     new cdk.CfnOutput(this, "NetworkConnectorOperatorRoleArn", { value: connectorOperatorRole.roleArn });
     new cdk.CfnOutput(this, "MicrovmProxyCacheTableName", { value: proxyCacheTable.tableName });
+  }
+
+  private createMicrovmImageSourceWithBaseImage(sourceDir: string, baseImage: string): string {
+    const dockerfilePath = path.join(sourceDir, "Dockerfile");
+    const configPath = path.join(sourceDir, "config.yaml");
+    const dockerfile = fs.readFileSync(dockerfilePath, "utf8");
+    const rewrittenDockerfile = dockerfile.replace(/^FROM\s+.+$/m, `FROM ${baseImage}`);
+    const generatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "litellm-microvm-image-"));
+    fs.writeFileSync(path.join(generatedDir, "Dockerfile"), rewrittenDockerfile, "utf8");
+    fs.copyFileSync(configPath, path.join(generatedDir, "config.yaml"));
+    return generatedDir;
   }
 }
 
