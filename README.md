@@ -405,6 +405,32 @@ This repository now includes a CDK stack at `infra/cdk` for the private architec
 
 `Client -> Public API Gateway (Usage Plan + API Key) -> Lambda auth proxy -> Lambda MicroVM (LiteLLM) -> Aurora Serverless + Bedrock endpoints`
 
+```mermaid
+flowchart LR
+  C[Client]
+  APIGW[API Gateway<br/>Usage Plan + API Key]
+  Proxy[Lambda auth proxy]
+  MicroVM[Lambda MicroVM<br/>LiteLLM]
+  Aurora[(Aurora Serverless v2<br/>PostgreSQL)]
+  VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs]
+  NAT[NAT Gateway]
+
+  C --> APIGW --> Proxy --> MicroVM
+  MicroVM --> Aurora
+  MicroVM --> VPCE
+
+  subgraph "publicMicrovm=true (default)"
+    MicroVM -. "private targets only<br/>(no NAT path)" .-> VPCE
+  end
+
+  subgraph "publicMicrovm=false (private mode)"
+    MicroVM --> NAT
+    NAT --> Internet[(Public Internet)]
+  end
+```
+
+Private-mode deployment (`publicMicrovm=false`) was undeployed/redeployed and validated with live checks: `/health/liveliness`, `/key/generate`, and `/chat/completions` all returned `200`.
+
 ### What it creates
 * VPC with public app subnets + isolated DB subnets (default), or private app subnets + NAT (private mode)
 * Aurora PostgreSQL Serverless v2
