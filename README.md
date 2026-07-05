@@ -83,6 +83,33 @@ Key design choices:
 - **Direct admin access path works:** local connector script reaches MicroVM directly and serves `/ui`.
 - **API Gateway key reuse constraint:** a single API key cannot be attached to multiple usage plans on the same stage.
 
+## Lambda proxy call interaction
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Client
+  participant APIGW as API Gateway
+  participant Proxy as Lambda proxy
+  participant DDB as DynamoDB cache
+  participant MicroCtl as Lambda MicroVM control plane
+  participant MicroVM as LiteLLM MicroVM :4000
+
+  Client->>APIGW: HTTPS request (x-api-key + Authorization)
+  APIGW->>Proxy: Invoke proxy Lambda
+  Proxy->>DDB: Read cached microvm_id/endpoint/token
+  alt Cache missing or expired
+    Proxy->>MicroCtl: ListMicrovms/GetMicrovmImage
+    Proxy->>MicroCtl: RunMicrovm (if none RUNNING)
+    Proxy->>MicroCtl: CreateMicrovmAuthToken(allowed port 4000)
+    Proxy->>DDB: Persist id/endpoint/token with TTL
+  end
+  Proxy->>MicroVM: Forward request + X-aws-proxy-auth + X-aws-proxy-port
+  MicroVM-->>Proxy: LiteLLM response (text/binary)
+  Proxy-->>APIGW: Return normalized response
+  APIGW-->>Client: HTTP response
+```
+
 ## Deploy
 
 ```bash
