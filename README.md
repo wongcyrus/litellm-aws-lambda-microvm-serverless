@@ -280,25 +280,13 @@ Direct-microVM reachability note:
 - with `ALL_INGRESS`, endpoint is directly reachable
 - with private ingress policy, you need private network path (VPN/peering/bastion)
 
-### `infra/cdk/scripts/destroy-stack.sh`
-
-Purpose:
-
-- Destroys the CDK stack using the same context pattern (`microvmRegion`, `publicMicrovm`).
-
-Environment overrides:
-
-| Variable | Default | Description |
-|---|---|---|
-| `STACK_NAME` | `PrivateLiteLlmMicrovmStack` | Stack to destroy |
-| `MICROVM_REGION` | `us-east-1` (or `CDK_DEFAULT_REGION`) | microVM region context |
-| `PUBLIC_MICROVM` | `true` | mode context passed to CDK |
+### Stack destroy (direct CDK command)
 
 Run:
 
 ```bash
 cd infra/cdk
-./scripts/destroy-stack.sh
+npx cdk destroy PrivateLiteLlmMicrovmStack --force -c microvmRegion=us-east-1 -c publicMicrovm=true
 ```
 
 ## API user guide (end-to-end)
@@ -433,12 +421,11 @@ infra/cdk/
   scripts/
     create-api-key.sh
     connect-admin-ui.sh
-    destroy-stack.sh
 ```
 
 ## Destroy
 
 ```bash
 cd infra/cdk
-./scripts/destroy-stack.sh
+npx cdk destroy PrivateLiteLlmMicrovmStack --force -c microvmRegion=us-east-1 -c publicMicrovm=true
 ```
