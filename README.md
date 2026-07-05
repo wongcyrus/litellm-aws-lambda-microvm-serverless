@@ -225,6 +225,12 @@ Expected output:
 - `Saved generated key to: <path>`
 - final line is generated key (unless `--json` is used)
 
+Plan ID source:
+
+- **CDK default plans**: use stack outputs `AwsGatewayUsagePlanId` / `AwsGatewayAdminUsagePlanId`.
+- **User-created plans**: pass your custom API Gateway usage plan ID directly.
+- Script behavior is the same for both because it always uses explicit `--usage-plan-id`.
+
 Validation rules / fail-fast behavior:
 
 - No fallback behavior.
