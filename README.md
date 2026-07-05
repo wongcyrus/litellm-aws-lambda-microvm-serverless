@@ -6,6 +6,24 @@ AWS-only deployment of LiteLLM on Lambda MicroVM with Aurora Serverless v2, API 
 
 `Client -> API Gateway (usage plan + API key) -> Lambda proxy -> Lambda MicroVM (LiteLLM) -> Aurora + Bedrock`
 
+### Mode 1: `publicMicrovm=true` (default, no NAT)
+
+```mermaid
+flowchart LR
+  C[Client]
+  APIGW[API Gateway<br/>Usage Plan + API Key]
+  Proxy[Lambda auth proxy]
+  MicroVM[Lambda MicroVM<br/>LiteLLM]
+  Aurora[(Aurora Serverless v2<br/>PostgreSQL)]
+  VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs]
+
+  C --> APIGW --> Proxy --> MicroVM
+  MicroVM --> Aurora
+  MicroVM --> VPCE
+```
+
+### Mode 2: `publicMicrovm=false` (private mode with NAT)
+
 ```mermaid
 flowchart LR
   C[Client]
@@ -15,19 +33,12 @@ flowchart LR
   Aurora[(Aurora Serverless v2<br/>PostgreSQL)]
   VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs]
   NAT[NAT Gateway]
+  Internet[(Public Internet)]
 
   C --> APIGW --> Proxy --> MicroVM
   MicroVM --> Aurora
   MicroVM --> VPCE
-
-  subgraph "publicMicrovm=true (default)"
-    MicroVM -. "private targets only<br/>(no NAT path)" .-> VPCE
-  end
-
-  subgraph "publicMicrovm=false (private mode)"
-    MicroVM --> NAT
-    NAT --> Internet[(Public Internet)]
-  end
+  MicroVM --> NAT --> Internet
 ```
 
 Key design choices:
