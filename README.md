@@ -13,13 +13,28 @@ flowchart LR
   C[Client]
   APIGW[API Gateway<br/>Usage Plan + API Key]
   Proxy[Lambda auth proxy]
+  Internet[(Public Internet)]
+  IGW[Internet Gateway]
   MicroVM[Lambda MicroVM<br/>LiteLLM]
   Aurora[(Aurora Serverless v2<br/>PostgreSQL)]
-  VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs]
+  VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs + S3 GW]
 
-  C --> APIGW --> Proxy --> MicroVM
-  MicroVM --> Aurora
-  MicroVM --> VPCE
+  C --> APIGW --> Proxy --> IGW
+  IGW --> MicroVM
+
+  subgraph VPC1["AppVpc (publicMicrovm=true, NAT=0)"]
+    subgraph APPPUB["AppPublic subnet (connector ENIs)"]
+      MicroVM
+    end
+    subgraph DBPRIV1["DbPrivate subnet (isolated)"]
+      Aurora
+    end
+    VPCE
+  end
+
+  MicroVM -->|SG + 5432| Aurora
+  MicroVM -->|Private endpoint path| VPCE
+  MicroVM -.->|No NAT egress path| Internet
 ```
 
 ### Mode 2: `publicMicrovm=false` (private mode with NAT)
@@ -29,15 +44,31 @@ flowchart LR
   C[Client]
   APIGW[API Gateway<br/>Usage Plan + API Key]
   Proxy[Lambda auth proxy]
+  Internet[(Public Internet)]
+  IGW[Internet Gateway]
   MicroVM[Lambda MicroVM<br/>LiteLLM]
   Aurora[(Aurora Serverless v2<br/>PostgreSQL)]
-  VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs]
+  VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs + S3 GW]
   NAT[NAT Gateway]
-  Internet[(Public Internet)]
 
-  C --> APIGW --> Proxy --> MicroVM
-  MicroVM --> Aurora
-  MicroVM --> VPCE
+  C --> APIGW --> Proxy --> IGW
+  IGW --> NAT
+
+  subgraph VPC2["AppVpc (publicMicrovm=false, NAT=1)"]
+    subgraph APPPRIV["AppPrivate subnet (connector ENIs)"]
+      MicroVM
+    end
+    subgraph APPPUB2["AppPublic subnet"]
+      NAT
+    end
+    subgraph DBPRIV2["DbPrivate subnet (isolated)"]
+      Aurora
+    end
+    VPCE
+  end
+
+  MicroVM -->|SG + 5432| Aurora
+  MicroVM -->|Private endpoint path| VPCE
   MicroVM --> NAT --> Internet
 ```
 
