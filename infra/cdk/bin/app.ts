@@ -6,7 +6,6 @@ const app = new cdk.App();
 
 const microvmRegion = app.node.tryGetContext("microvmRegion") ?? process.env.CDK_DEFAULT_REGION;
 const microvmArtifactKey = app.node.tryGetContext("microvmArtifactKey");
-const apiGatewayApiKeyValue = app.node.tryGetContext("apiGatewayApiKeyValue");
 const microvmEgressConnectorArn = app.node.tryGetContext("microvmEgressConnectorArn");
 const microvmContainerBaseImage = app.node.tryGetContext("microvmContainerBaseImage");
 const useCodebuildEcrBaseImageContext = app.node.tryGetContext("useCodebuildEcrBaseImage");
@@ -17,10 +16,10 @@ const publicMicrovm = publicMicrovmContext === undefined ? true : String(publicM
 const readinessCheckNonce = new Date().toISOString();
 const internetEgressConnectorArn = `arn:aws:lambda:${microvmRegion}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`;
 
-if (!microvmRegion || !apiGatewayApiKeyValue) {
+if (!microvmRegion) {
   throw new Error(
-    "Missing required context. Provide microvmRegion and apiGatewayApiKeyValue, for example: " +
-      "cdk deploy -c microvmRegion=ap-northeast-1 -c apiGatewayApiKeyValue=<long-random-key>"
+    "Missing required context. Provide microvmRegion, for example: " +
+      "cdk deploy -c microvmRegion=ap-northeast-1"
   );
 }
 
@@ -43,6 +42,5 @@ new PrivateLiteLlmMicrovmStack(app, "PrivateLiteLlmMicrovmStack", {
   microvmContainerBaseImage: microvmContainerBaseImage ? String(microvmContainerBaseImage) : undefined,
   useCodebuildEcrBaseImage,
   readinessCheckNonce,
-  publicMicrovm,
-  apiGatewayApiKeyValue: String(apiGatewayApiKeyValue)
+  publicMicrovm
 });

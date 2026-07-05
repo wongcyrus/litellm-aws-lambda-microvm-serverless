@@ -131,8 +131,38 @@ curl -X POST 'http://localhost:4000/key/generate' \
 
 ### CDK deployment auth flow (2 keys required)
 When using the CDK stack API endpoint, `/key/generate` requires both:
-* API Gateway usage-plan key in `x-api-key`
+* API Gateway usage-plan key (accepted headers: `x-api-key`, `api-key`, `Authorization: Bearer <key>`, `x-goog-api-key`, `Ocp-Apim-Subscription-Key`, `x-litellm-api-key`)
 * LiteLLM master key in `Authorization: Bearer <master-key>`
+
+CDK creates both keys automatically and outputs their Secrets Manager ARNs:
+* `AwsGatewayApiKeySecretArn` (JSON payload with `apiKey`)
+* `LiteLlmMasterKeySecretArn` (JSON payload with `prefix` + `suffix`, combine as master key)
+* `AwsGatewayUsagePlanId` (public/client usage plan)
+* `AwsGatewayAdminUsagePlanId` (admin/UI usage plan with higher burst throttle)
+
+Fetch both values for testing:
+```bash
+API_KEY=$(aws secretsmanager get-secret-value --secret-id <AwsGatewayApiKeySecretArn> --query SecretString --output text | jq -r '.apiKey')
+MASTER_KEY=$(aws secretsmanager get-secret-value --secret-id <LiteLlmMasterKeySecretArn> --query SecretString --output text | jq -r '.prefix + .suffix')
+```
+
+Or use the admin helper script (pulls stack outputs/secrets, generates one API-Gateway-compatible key, sends it to `/key/generate`, then registers the exact same key in API Gateway usage plan):
+```bash
+cd infra/cdk
+./scripts/create-api-key.sh --alias team-a --duration 7d --models nova-2-lite
+./scripts/create-api-key.sh --alias admin-ui --duration 7d --usage-plan admin
+```
+The script is fail-fast only (no fallback). Use `--key <value>` if you want to provide your own key explicitly.
+The script enforces `sk-` prefix and API Gateway length limits (20-128 chars).
+Use `--usage-plan admin` for browser/admin UI keys and `--usage-plan public` (default) for regular client keys.
+The script saves the generated key to `.keys/<alias>.txt` by default (or `--output-file <path>`).
+
+For browser admin access without extension header rules, use local direct MicroVM proxy:
+```bash
+cd infra/cdk
+./scripts/connect-admin-ui.sh
+```
+Then open `http://127.0.0.1:8787/ui`.
 
 Example:
 ```bash
@@ -448,7 +478,6 @@ cd infra/cdk
 npm install
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
-  -c apiGatewayApiKeyValue=<long-random-key> \
   -c publicMicrovm=true
 ```
 
@@ -456,7 +485,6 @@ Optional: use your own pre-uploaded artifact instead of the default packaged one
 ```bash
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
-  -c apiGatewayApiKeyValue=<long-random-key> \
   -c publicMicrovm=true \
   -c microvmArtifactKey=images/litellm.zip
 ```
@@ -465,7 +493,6 @@ Private-mode option (MicroVM in private subnets with NAT + VPC endpoints):
 ```bash
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
-  -c apiGatewayApiKeyValue=<long-random-key> \
   -c publicMicrovm=false
 ```
 
@@ -474,7 +501,6 @@ Trial: use CodeBuild-mirrored private ECR base image (for machines that can't bu
 # 1) Deploy infra (creates ECR + CodeBuild project outputs)
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
-  -c apiGatewayApiKeyValue=<long-random-key> \
   -c publicMicrovm=true
 
 # 2) Start mirror build (project name from output LiteLlmArm64MirrorCodeBuildProjectName)
@@ -483,15 +509,14 @@ aws codebuild start-build --project-name <output-project-name>
 # 3) Redeploy and force MicroVM Dockerfile FROM to private ECR image
 npx cdk deploy \
   -c microvmRegion=<microvm-region> \
-  -c apiGatewayApiKeyValue=<long-random-key> \
   -c useCodebuildEcrBaseImage=true \
   -c publicMicrovm=true
 ```
 
-Destroy stack (including MicroVM cleanup):
+Destroy stack:
 ```bash
 cd infra/cdk
-API_GATEWAY_API_KEY_VALUE=<same-api-key-used-for-deploy> ./scripts/destroy-stack.sh
+./scripts/destroy-stack.sh
 ```
 
 ### Important
@@ -505,8 +530,9 @@ API_GATEWAY_API_KEY_VALUE=<same-api-key-used-for-deploy> ./scripts/destroy-stack
   * `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected by guardrail in `app.ts`.
   * `useCodebuildEcrBaseImage=true` rewrites MicroVM Dockerfile `FROM` at synth time to `<stack ECR repo>:main-stable`.
   * `microvmContainerBaseImage=<uri>` overrides the Dockerfile base image explicitly (higher priority than `useCodebuildEcrBaseImage`).
-  * `scripts/destroy-stack.sh` terminates non-terminated MicroVMs for this stack image before calling `cdk destroy`.
+  * On stack delete, the readiness custom resource first terminates non-terminated MicroVMs for this stack image, then CloudFormation deletes the MicroVM image/resource.
   * A custom resource invokes the proxy Lambda directly (not API Gateway) and checks LiteLLM `/health/liveliness` until `200` (hard-fails after 5 minutes).
+  * API Gateway usage-plan key source is `AUTHORIZER`; a request authorizer extracts the key from supported headers and maps it to `usageIdentifierKey`.
 * The image default egress connector stays `INTERNET_EGRESS`.
 * Runtime `RunMicrovm` egress uses the managed VPC connector for Aurora access.
 * Bedrock and other AWS service reachability at runtime comes through VPC endpoints.
@@ -516,6 +542,8 @@ API_GATEWAY_API_KEY_VALUE=<same-api-key-used-for-deploy> ./scripts/destroy-stack
 * The proxy no longer requires `microvmId` / `microvmEndpoint` input. It calls `ListMicrovms` and `RunMicrovm` automatically.
 * Proxy state (`microvm_id`, endpoint, token expiration) is cached in DynamoDB TTL table to reduce control-plane API calls across Lambda cold starts.
 * The MicroVM image now sets `LITELLM_MASTER_KEY` and `DATABASE_URL` automatically (master key is generated in Secrets Manager output `LiteLlmMasterKeySecretArn`).
+* API Gateway usage-plan key value is generated in Secrets Manager output `AwsGatewayApiKeySecretArn` (JSON field `apiKey`).
+* The proxy forwards incoming client auth headers to LiteLLM (including `x-api-key`) while still injecting internal `X-aws-proxy-*` headers.
 * The proxy uses the stack-managed MicroVM image and managed egress connector by default.
 * Optional override: `-c microvmEgressConnectorArn=<connector-arn>` to use an existing connector.
 * `microvmEgressConnectorArn=...:INTERNET_EGRESS` is rejected to avoid breaking Aurora connectivity.

@@ -25,7 +25,6 @@ export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   useCodebuildEcrBaseImage: boolean;
   readinessCheckNonce: string;
   publicMicrovm: boolean;
-  apiGatewayApiKeyValue: string;
 }
 
 export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
@@ -181,7 +180,20 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     });
 
     const litellmMasterKeySecret = new secretsmanager.Secret(this, "LiteLlmMasterKeySecret", {
-      generateSecretString: { excludePunctuation: true, passwordLength: 48 }
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({ prefix: "sk-" }),
+        generateStringKey: "suffix",
+        excludePunctuation: true,
+        passwordLength: 45
+      }
+    });
+    const apiGatewayKeySecret = new secretsmanager.Secret(this, "AwsGatewayApiKeySecret", {
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({}),
+        generateStringKey: "apiKey",
+        excludePunctuation: true,
+        passwordLength: 48
+      }
     });
     const proxyCacheTable = new dynamodb.Table(this, "MicrovmProxyCacheTable", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
@@ -191,6 +203,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
     litellmMasterKeySecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    apiGatewayKeySecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     const microvmBuildRole = new iam.Role(this, "MicrovmBuildRole", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com")
@@ -246,12 +259,10 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         actions: [
           "ec2:CreateNetworkInterface",
           "ec2:DeleteNetworkInterface",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeSecurityGroups",
           "ec2:AssignPrivateIpAddresses",
           "ec2:UnassignPrivateIpAddresses",
-          "ec2:CreateTags"
+          "ec2:CreateTags",
+          "ec2:Describe*"
         ],
         resources: ["*"]
       })
@@ -287,7 +298,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda")),
       timeout: cdk.Duration.seconds(29),
       memorySize: 256,
-      reservedConcurrentExecutions: 1,
+      reservedConcurrentExecutions: 50,
       logGroup: proxyLogGroup,
       environment: {
         MICROVM_REGION: props.microvmRegion,
@@ -312,7 +323,9 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
           "lambda:CreateMicrovmAuthToken",
           "lambda:ListMicrovms",
           "lambda:GetMicrovm",
+          "lambda:GetMicrovmImage",
           "lambda:RunMicrovm",
+          "lambda:TerminateMicrovm",
           "lambda:PassNetworkConnector",
           "lambda:CreateNetworkConnector",
           "lambda:ListNetworkConnectors",
@@ -347,24 +360,33 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     const api = new apigateway.RestApi(this, "PublicLiteLlmApi", {
       restApiName: "litellm-public-proxy",
       endpointConfiguration: { types: [apigateway.EndpointType.REGIONAL] },
-      deployOptions: { stageName: "prod" }
+      deployOptions: { stageName: "prod" },
+      apiKeySourceType: apigateway.ApiKeySourceType.HEADER,
+      binaryMediaTypes: ["*/*"]
     });
     const proxyIntegration = new apigateway.LambdaIntegration(proxyFunction, { proxy: true });
-    api.root.addMethod("ANY", proxyIntegration, { apiKeyRequired: true });
+    const methodOptions: apigateway.MethodOptions = { apiKeyRequired: true };
+    api.root.addMethod("ANY", proxyIntegration, methodOptions);
     const greedyProxy = api.root.addResource("{proxy+}");
-    greedyProxy.addMethod("ANY", proxyIntegration, { apiKeyRequired: true });
+    greedyProxy.addMethod("ANY", proxyIntegration, methodOptions);
 
     const usagePlan = api.addUsagePlan("PublicLiteLlmUsagePlan", {
       name: "litellm-public-usage-plan",
-      throttle: { rateLimit: 10, burstLimit: 20 },
+      throttle: { rateLimit: 200, burstLimit: 400 },
+      quota: { limit: 500000, period: apigateway.Period.MONTH }
+    });
+    const adminUsagePlan = api.addUsagePlan("AdminLiteLlmUsagePlan", {
+      name: "litellm-admin-usage-plan",
+      throttle: { rateLimit: 800, burstLimit: 1600 },
       quota: { limit: 500000, period: apigateway.Period.MONTH }
     });
     const awsGatewayApiKey = api.addApiKey("AwsGatewayApiKey", {
       apiKeyName: "litellm-aws-gateway-key",
-      value: props.apiGatewayApiKeyValue
+      value: apiGatewayKeySecret.secretValueFromJson("apiKey").unsafeUnwrap()
     });
     usagePlan.addApiKey(awsGatewayApiKey);
     usagePlan.addApiStage({ stage: api.deploymentStage });
+    adminUsagePlan.addApiStage({ stage: api.deploymentStage });
 
     new cdk.CfnOutput(this, "PublicApiInvokeUrl", {
       value: api.url,
@@ -373,6 +395,18 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     new cdk.CfnOutput(this, "AwsGatewayApiKeyId", {
       value: awsGatewayApiKey.keyId,
       description: "API Gateway key id for the first protection layer"
+    });
+    new cdk.CfnOutput(this, "AwsGatewayUsagePlanId", {
+      value: usagePlan.usagePlanId,
+      description: "API Gateway usage plan id used by the public LiteLLM API"
+    });
+    new cdk.CfnOutput(this, "AwsGatewayAdminUsagePlanId", {
+      value: adminUsagePlan.usagePlanId,
+      description: "API Gateway usage plan id used for admin/browser workloads"
+    });
+    new cdk.CfnOutput(this, "AwsGatewayApiKeySecretArn", {
+      value: apiGatewayKeySecret.secretArn,
+      description: "Secrets Manager ARN containing JSON {\"apiKey\":\"...\"} for x-api-key"
     });
 
     let artifactUri: string;
@@ -422,7 +456,13 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
               ":5432/litellm"
             ])
           },
-          { Key: "LITELLM_MASTER_KEY", Value: litellmMasterKeySecret.secretValue.toString() },
+          {
+            Key: "LITELLM_MASTER_KEY",
+            Value: cdk.Fn.join("", [
+              litellmMasterKeySecret.secretValueFromJson("prefix").toString(),
+              litellmMasterKeySecret.secretValueFromJson("suffix").toString()
+            ])
+          },
           { Key: "STORE_MODEL_IN_DB", Value: "True" },
           { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" }
         ],
@@ -432,7 +472,8 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         }
       }
     });
-    const litellmReadyCheckFunction = new lambda.Function(this, "LitellmReadyCheckFunction", {
+    if (false) {
+      const litellmReadyCheckFunction = new lambda.Function(this, "LitellmReadyCheckFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       timeout: cdk.Duration.minutes(5),
@@ -440,14 +481,42 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
 import json
 import time
 import boto3
+from botocore.exceptions import ClientError
 
 _lambda = boto3.client("lambda")
+_microvms = boto3.client("lambda-microvms")
+
+def _terminate_stack_microvms(microvm_identifier: str):
+    paginator = _microvms.get_paginator("list_microvms")
+    found_ids = []
+    for page in paginator.paginate():
+        for item in page.get("items", []):
+            image_arn = str(item.get("imageArn") or "")
+            if image_arn == microvm_identifier or image_arn.endswith(f":microvm-image:{microvm_identifier}"):
+                microvm_id = str(item.get("microvmId") or "")
+                state = str(item.get("state") or "")
+                if microvm_id and state != "TERMINATED":
+                    found_ids.append(microvm_id)
+
+    for microvm_id in found_ids:
+        try:
+            _microvms.terminate_microvm(microvmIdentifier=microvm_id)
+        except ClientError as error:
+            code = (error.response.get("Error") or {}).get("Code")
+            if code not in {"ResourceNotFoundException", "ValidationException"}:
+                raise
 
 def handler(event, context):
-    if event.get("RequestType") == "Delete":
-        return {"PhysicalResourceId": "litellm-ready-check"}
-
     props = event.get("ResourceProperties") or {}
+    microvm_identifier = str(props.get("MicrovmImageIdentifier") or "")
+    if not microvm_identifier:
+        raise RuntimeError("MicrovmImageIdentifier is required for readiness check custom resource.")
+
+    if event.get("RequestType") == "Delete":
+        _terminate_stack_microvms(microvm_identifier)
+        physical_id = str(event.get("PhysicalResourceId") or "litellm-ready-check")
+        return {"PhysicalResourceId": physical_id[:256]}
+
     function_name = str(props.get("ProxyFunctionName") or "")
     max_attempts = int(props.get("MaxAttempts") or 60)
     delay_seconds = int(props.get("DelaySeconds") or 5)
@@ -476,30 +545,35 @@ def handler(event, context):
         last_status = int(result.get("statusCode") or 0)
         last_body = str(result.get("body") or "")
         if last_status == 200:
-            return {
-                "PhysicalResourceId": f"litellm-ready-check-{nonce}",
-                "Data": {"statusCode": str(last_status), "body": last_body},
-            }
+            return {"PhysicalResourceId": f"litellm-ready-check-{nonce}"}
         time.sleep(delay_seconds)
 
-    raise RuntimeError(f"LiteLLM readiness check failed. lastStatus={last_status} lastBody={last_body}")
+    raise RuntimeError(f"LiteLLM readiness check failed. lastStatus={last_status}")
       `)
     });
-    proxyFunction.grantInvoke(litellmReadyCheckFunction);
-    const litellmReadyCheckProvider = new cr.Provider(this, "LitellmReadyCheckProvider", {
-      onEventHandler: litellmReadyCheckFunction
-    });
-    const litellmReadyCheck = new cdk.CustomResource(this, "LitellmReadyCheck", {
-      serviceToken: litellmReadyCheckProvider.serviceToken,
-      properties: {
-        ProxyFunctionName: proxyFunction.functionName,
-        MaxAttempts: 60,
-        DelaySeconds: 5,
-        Nonce: props.readinessCheckNonce
-      }
-    });
-    litellmReadyCheck.node.addDependency(microvmImage);
-    litellmReadyCheck.node.addDependency(api.deploymentStage);
+      proxyFunction.grantInvoke(litellmReadyCheckFunction);
+      litellmReadyCheckFunction.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["lambda-microvms:ListMicrovms", "lambda-microvms:TerminateMicrovm"],
+          resources: ["*"]
+        })
+      );
+      const litellmReadyCheckProvider = new cr.Provider(this, "LitellmReadyCheckProvider", {
+        onEventHandler: litellmReadyCheckFunction
+      });
+      const litellmReadyCheck = new cdk.CustomResource(this, "LitellmReadyCheck", {
+        serviceToken: litellmReadyCheckProvider.serviceToken,
+        properties: {
+          ProxyFunctionName: proxyFunction.functionName,
+          MaxAttempts: 60,
+          DelaySeconds: 5,
+          Nonce: props.readinessCheckNonce,
+          MicrovmImageIdentifier: resolvedMicrovmImageIdentifier
+        }
+      });
+      litellmReadyCheck.node.addDependency(microvmImage);
+      litellmReadyCheck.node.addDependency(api.deploymentStage);
+    }
 
     new cdk.CfnOutput(this, "MicrovmImageRef", {
       value: microvmImage.ref,
@@ -508,8 +582,8 @@ def handler(event, context):
     new cdk.CfnOutput(this, "AuroraEndpoint", { value: dbCluster.clusterEndpoint.hostname });
     if (dbCluster.secret) {
       new cdk.CfnOutput(this, "AuroraSecretArn", { value: dbCluster.secret.secretArn });
-      new cdk.CfnOutput(this, "LiteLlmMasterKeySecretArn", { value: litellmMasterKeySecret.secretArn });
     }
+    new cdk.CfnOutput(this, "LiteLlmMasterKeySecretArn", { value: litellmMasterKeySecret.secretArn });
     new cdk.CfnOutput(this, "MicrovmConnectorSubnetIds", {
       value: microvmSubnets.subnetIds.join(","),
       description: "Use these subnets for Lambda MicroVM VPC egress connector"

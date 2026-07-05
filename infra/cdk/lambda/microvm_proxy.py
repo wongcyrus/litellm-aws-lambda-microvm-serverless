@@ -175,11 +175,18 @@ def _ensure_vpc_egress_connector() -> str | None:
 
 def _ensure_running_microvm() -> tuple[str, str]:
     _load_cache_from_dynamodb()
+    image_detail = _client.get_microvm_image(imageIdentifier=MICROVM_IMAGE_IDENTIFIER)
+    latest_image_version = str(image_detail.get("latestActiveImageVersion") or "")
 
     def matches_image_identifier(image_arn: str) -> bool:
         if MICROVM_IMAGE_IDENTIFIER.startswith("arn:aws:lambda:"):
             return image_arn == MICROVM_IMAGE_IDENTIFIER
         return image_arn.endswith(f":microvm-image:{MICROVM_IMAGE_IDENTIFIER}")
+
+    def matches_latest_image_version(image_version: Any) -> bool:
+        if not latest_image_version:
+            return True
+        return str(image_version or "") == latest_image_version
 
     def matches_required_egress(detail: dict[str, Any]) -> bool:
         if not MICROVM_EGRESS_CONNECTOR_ARN:
@@ -193,7 +200,7 @@ def _ensure_running_microvm() -> tuple[str, str]:
         try:
             detail = _client.get_microvm(microvmIdentifier=str(cached_id))
             state = detail["state"]
-            if state == "RUNNING" and matches_required_egress(detail):
+            if state == "RUNNING" and matches_required_egress(detail) and matches_latest_image_version(detail.get("imageVersion")):
                 return str(cached_id), str(cached_endpoint)
         except ClientError:
             pass
@@ -203,6 +210,9 @@ def _ensure_running_microvm() -> tuple[str, str]:
         for item in page.get("items", []):
             if matches_image_identifier(item.get("imageArn", "")) and item.get("state") == "RUNNING":
                 microvm_id = item["microvmId"]
+                if not matches_latest_image_version(item.get("imageVersion")):
+                    _client.terminate_microvm(microvmIdentifier=microvm_id)
+                    continue
                 detail = _client.get_microvm(microvmIdentifier=microvm_id)
                 if not matches_required_egress(detail):
                     _client.terminate_microvm(microvmIdentifier=microvm_id)
@@ -227,6 +237,8 @@ def _ensure_running_microvm() -> tuple[str, str]:
     }
     if MICROVM_IMAGE_VERSION:
         run_args["imageVersion"] = MICROVM_IMAGE_VERSION
+    elif latest_image_version:
+        run_args["imageVersion"] = latest_image_version
     egress_connector_arn = _ensure_vpc_egress_connector()
     if egress_connector_arn and egress_connector_arn != MICROVM_EGRESS_CONNECTOR_ARN:
         raise RuntimeError("Resolved VPC egress connector does not match MICROVM_EGRESS_CONNECTOR_ARN")
@@ -289,14 +301,28 @@ def _forward_to_microvm(event: dict) -> dict:
         "host",
         "connection",
         "content-length",
+        "accept-encoding",
         "transfer-encoding",
         "x-amzn-trace-id",
         "x-aws-proxy-auth",
         "x-aws-proxy-port",
-        "x-api-key",
     ]:
         forwarded_headers.pop(blocked_header, None)
         forwarded_headers.pop(blocked_header.title(), None)
+
+    # For key-management endpoints, authenticate to LiteLLM only via Authorization
+    # (master key). Keep API Gateway key at the gateway layer and avoid passing it
+    # through to app auth, which can conflict with master-key auth on /key/* routes.
+    if path == "/key/generate" or path.startswith("/key/"):
+        for key_header in [
+            "x-api-key",
+            "api-key",
+            "x-goog-api-key",
+            "ocp-apim-subscription-key",
+            "x-litellm-api-key",
+        ]:
+            forwarded_headers.pop(key_header, None)
+            forwarded_headers.pop(key_header.title(), None)
 
     forwarded_headers["X-aws-proxy-auth"] = _create_microvm_auth_token(microvm_id)
     forwarded_headers["X-aws-proxy-port"] = MICROVM_PORT
@@ -320,19 +346,58 @@ def _forward_to_microvm(event: dict) -> dict:
         with urllib.request.urlopen(request, timeout=30) as response:
             response_bytes = response.read()
             response_headers = dict(response.headers.items())
+            content_type = str(response_headers.get("content-type") or response_headers.get("Content-Type") or "")
+            lowered_content_type = content_type.lower()
+            is_text_response = (
+                lowered_content_type.startswith("text/")
+                or "json" in lowered_content_type
+                or "javascript" in lowered_content_type
+                or "xml" in lowered_content_type
+                or "svg" in lowered_content_type
+            )
+            if is_text_response:
+                response_body = response_bytes.decode("utf-8", errors="replace")
+                is_base64_encoded = False
+            else:
+                response_body = base64.b64encode(response_bytes).decode("ascii")
+                is_base64_encoded = True
+
+            for header_name in ["content-length", "Content-Length", "transfer-encoding", "Transfer-Encoding"]:
+                response_headers.pop(header_name, None)
+
             return {
                 "statusCode": response.status,
-                "isBase64Encoded": False,
+                "isBase64Encoded": is_base64_encoded,
                 "headers": response_headers,
-                "body": response_bytes.decode("utf-8"),
+                "body": response_body,
             }
     except urllib.error.HTTPError as error:
         error_body = error.read()
+        error_headers = dict(error.headers.items()) if error.headers else {}
+        error_content_type = str(error_headers.get("content-type") or error_headers.get("Content-Type") or "")
+        lowered_error_content_type = error_content_type.lower()
+        is_text_error = (
+            lowered_error_content_type.startswith("text/")
+            or "json" in lowered_error_content_type
+            or "javascript" in lowered_error_content_type
+            or "xml" in lowered_error_content_type
+            or "svg" in lowered_error_content_type
+        )
+        if is_text_error:
+            response_body = error_body.decode("utf-8", errors="replace")
+            is_base64_encoded = False
+        else:
+            response_body = base64.b64encode(error_body).decode("ascii")
+            is_base64_encoded = True
+
+        for header_name in ["content-length", "Content-Length", "transfer-encoding", "Transfer-Encoding"]:
+            error_headers.pop(header_name, None)
+
         return {
             "statusCode": error.code,
-            "isBase64Encoded": False,
-            "headers": dict(error.headers.items()) if error.headers else {},
-            "body": error_body.decode("utf-8"),
+            "isBase64Encoded": is_base64_encoded,
+            "headers": error_headers,
+            "body": response_body,
         }
 
 
