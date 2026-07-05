@@ -419,10 +419,12 @@ Practical impact:
 - Changing model settings in LiteLLM admin/API: **no MicroVM image rebuild required**.
 - Changing `infra/cdk/microvm-image/config.yaml`: affects the baked image config and therefore requires image rebuild/redeploy to change bootstrap/default image content.
 
-### Source references
+### LiteLLM documentation references
 
-- `infra/cdk/lib/private-litellm-microvm-stack.ts:473-494` (MicroVM image env includes `DATABASE_URL`, `LITELLM_MASTER_KEY`, `STORE_MODEL_IN_DB=True`)
-- `infra/cdk/microvm-image/config.yaml:1-14` (baked `model_list` in image artifact)
+- https://docs.litellm.ai/docs/proxy/ui_store_model_db_setting  
+  (Store Model in DB behavior, immediate effect, and config-file override semantics)
+- https://docs.litellm.ai/docs/proxy/model_management  
+  (model management APIs like `/model/new` and `/model/info` for runtime updates)
 
 ## Cost behavior summary
 
