@@ -406,6 +406,24 @@ curl -sS -X POST "${PUBLIC_API_URL%/}/chat/completions" \
 - maximum duration:
   - `maximumDurationInSeconds = 28800`
 
+## Model source of truth: DB vs YAML
+
+In this stack, model configuration is expected to be **database-driven at runtime**.
+
+- `STORE_MODEL_IN_DB=True` is set on the MicroVM image environment.
+- `DATABASE_URL` is also injected, pointing LiteLLM to Aurora.
+- Therefore, model changes should be done via LiteLLM admin/API (persisted in DB), not by editing YAML for day-to-day operations.
+
+Practical impact:
+
+- Changing model settings in LiteLLM admin/API: **no MicroVM image rebuild required**.
+- Changing `infra/cdk/microvm-image/config.yaml`: affects the baked image config and therefore requires image rebuild/redeploy to change bootstrap/default image content.
+
+### Source references
+
+- `infra/cdk/lib/private-litellm-microvm-stack.ts:473-494` (MicroVM image env includes `DATABASE_URL`, `LITELLM_MASTER_KEY`, `STORE_MODEL_IN_DB=True`)
+- `infra/cdk/microvm-image/config.yaml:1-14` (baked `model_list` in image artifact)
+
 ## Cost behavior summary
 
 - Default mode avoids NAT cost (`publicMicrovm=true`).
