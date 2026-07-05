@@ -289,7 +289,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     const runtimeEgressConnectorArn = resolvedEgressConnectorArn!;
 
     const proxyLogGroup = new logs.LogGroup(this, "MicrovmAuthProxyLogGroup", {
-      retention: logs.RetentionDays.ONE_MONTH,
+      retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
     const proxyFunction = new lambda.Function(this, "MicrovmAuthProxyFunction", {
@@ -357,10 +357,32 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       })
     );
 
+    const apiAccessLogGroup = new logs.LogGroup(this, "PublicLiteLlmApiAccessLogGroup", {
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
+
     const api = new apigateway.RestApi(this, "PublicLiteLlmApi", {
       restApiName: "litellm-public-proxy",
       endpointConfiguration: { types: [apigateway.EndpointType.REGIONAL] },
-      deployOptions: { stageName: "prod" },
+      cloudWatchRole: true,
+      deployOptions: {
+        stageName: "prod",
+        loggingLevel: apigateway.MethodLoggingLevel.ERROR,
+        dataTraceEnabled: false,
+        accessLogDestination: new apigateway.LogGroupLogDestination(apiAccessLogGroup),
+        accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields({
+          caller: false,
+          httpMethod: true,
+          ip: true,
+          protocol: true,
+          requestTime: true,
+          resourcePath: true,
+          responseLength: true,
+          status: true,
+          user: false
+        })
+      },
       apiKeySourceType: apigateway.ApiKeySourceType.HEADER,
       binaryMediaTypes: ["*/*"]
     });
@@ -407,6 +429,11 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     new cdk.CfnOutput(this, "AwsGatewayApiKeySecretArn", {
       value: apiGatewayKeySecret.secretArn,
       description: "Secrets Manager ARN containing JSON {\"apiKey\":\"...\"} for x-api-key"
+    });
+
+    new logs.LogRetention(this, "PublicLiteLlmApiExecutionLogRetention", {
+      logGroupName: cdk.Fn.join("", ["API-Gateway-Execution-Logs_", api.restApiId, "/", api.deploymentStage.stageName]),
+      retention: logs.RetentionDays.ONE_WEEK
     });
 
     let artifactUri: string;
@@ -471,6 +498,10 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
           CloudWatch: { LogGroup: cdk.Fn.join("", ["/aws/lambda-microvms/", microvmImageName]) }
         }
       }
+    });
+    new logs.LogRetention(this, "MicrovmRuntimeLogRetention", {
+      logGroupName: cdk.Fn.join("", ["/aws/lambda-microvms/", microvmImageName]),
+      retention: logs.RetentionDays.ONE_WEEK
     });
     if (false) {
       const litellmReadyCheckFunction = new lambda.Function(this, "LitellmReadyCheckFunction", {
