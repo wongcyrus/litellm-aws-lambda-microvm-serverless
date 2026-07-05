@@ -176,14 +176,36 @@ API_KEY_JSON=$(aws secretsmanager get-secret-value --secret-id <AwsGatewayApiKey
 MASTER_JSON=$(aws secretsmanager get-secret-value --secret-id <LiteLlmMasterKeySecretArn> --query SecretString --output text)
 ```
 
-## Key management script
+## Script reference (detailed)
 
-`infra/cdk/scripts/create-api-key.sh` does:
+### `infra/cdk/scripts/create-api-key.sh`
 
-- reads stack outputs/secrets
-- calls `/key/generate`
-- registers the exact same key in API Gateway usage plan
-- stores generated key to `.keys/<alias>.txt` (`chmod 600`)
+Purpose:
+
+- Generates one LiteLLM user key and registers the same value in API Gateway usage plan.
+- Pulls required stack outputs and secrets automatically.
+- Saves key to local file for reuse.
+
+Required IAM permissions:
+
+- `cloudformation:DescribeStacks`
+- `secretsmanager:GetSecretValue`
+- `apigateway:CreateApiKey`
+- `apigateway:CreateUsagePlanKey`
+
+Arguments:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--alias` | no | Key alias (`default: user-key`) |
+| `--duration` | no | LiteLLM key duration (`default: 24h`) |
+| `--models` | no | Comma-separated model allowlist |
+| `--usage-plan` | no | `public` or `admin` (`default: public`) |
+| `--key` | no | Use explicit key value instead of random generation |
+| `--output-file` | no | Output path (`default: .keys/<alias>.txt`) |
+| `--json` | no | Print full API response JSON instead of key only |
+| `--stack` | no | CloudFormation stack name override |
+| `--region` | no | AWS region override |
 
 Examples:
 
@@ -191,23 +213,51 @@ Examples:
 cd infra/cdk
 ./scripts/create-api-key.sh --alias team-a --duration 7d --models nova-2-lite
 ./scripts/create-api-key.sh --alias admin-ui --duration 7d --usage-plan admin
+./scripts/create-api-key.sh --alias ci --duration 24h --output-file .keys/ci.txt
 ```
 
-Fail-fast behavior:
+Expected output:
 
-- no fallback generation path
-- requires `sk-` prefix
-- enforces API Gateway key length `20-128`
-- fails if LiteLLM returns a different key than requested
+- `Attached key to usage plan scope: <public|admin>`
+- `Saved generated key to: <path>`
+- final line is generated key (unless `--json` is used)
 
-## Admin UI direct connector (not via API Gateway)
+Validation rules / fail-fast behavior:
 
-`infra/cdk/scripts/connect-admin-ui.sh`:
+- No fallback behavior.
+- Key must start with `sk-`.
+- Key length must be `20-128` (API Gateway limit).
+- Script fails if `/key/generate` does not return the exact requested key.
 
-- discovers or starts a RUNNING MicroVM for stack image
-- creates short-lived MicroVM auth token
-- runs local proxy at `http://127.0.0.1:8787/ui`
-- prints LiteLLM admin login key (master key)
+### `infra/cdk/scripts/connect-admin-ui.sh`
+
+Purpose:
+
+- Opens local browser access to LiteLLM admin UI through direct MicroVM connection.
+- Does not use API Gateway for UI transport.
+- Prints LiteLLM master key for web login.
+
+Required IAM permissions:
+
+- `cloudformation:DescribeStacks`
+- `cloudformation:DescribeStackResource`
+- `lambda:GetFunctionConfiguration`
+- `lambda-microvms:ListMicrovms`
+- `lambda-microvms:GetMicrovm`
+- `lambda-microvms:RunMicrovm` (unless existing RUNNING microVM is found)
+- `lambda-microvms:CreateMicrovmAuthToken`
+- `secretsmanager:GetSecretValue`
+
+Arguments:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--port` | no | Local listen port (`default: 8787`) |
+| `--microvm-port` | no | Upstream app port on microVM (`default: 4000`) |
+| `--token-minutes` | no | Auth token TTL minutes (`default: 60`) |
+| `--no-start` | no | Fail if no RUNNING microVM exists |
+| `--stack` | no | CloudFormation stack name override |
+| `--region` | no | AWS region override |
 
 Run:
 
@@ -216,10 +266,124 @@ cd infra/cdk
 ./scripts/connect-admin-ui.sh
 ```
 
-Direct-MicroVM reachability note:
+Expected output:
+
+- `MicroVM ID: ...`
+- `MicroVM endpoint: ...`
+- `Local admin proxy: http://127.0.0.1:8787/ui`
+- `LiteLLM admin login key: ...`
+
+Then open `http://127.0.0.1:8787/ui` and login with printed master key.
+
+Direct-microVM reachability note:
 
 - with `ALL_INGRESS`, endpoint is directly reachable
 - with private ingress policy, you need private network path (VPN/peering/bastion)
+
+### `infra/cdk/scripts/destroy-stack.sh`
+
+Purpose:
+
+- Destroys the CDK stack using the same context pattern (`microvmRegion`, `publicMicrovm`).
+
+Environment overrides:
+
+| Variable | Default | Description |
+|---|---|---|
+| `STACK_NAME` | `PrivateLiteLlmMicrovmStack` | Stack to destroy |
+| `MICROVM_REGION` | `us-east-1` (or `CDK_DEFAULT_REGION`) | microVM region context |
+| `PUBLIC_MICROVM` | `true` | mode context passed to CDK |
+
+Run:
+
+```bash
+cd infra/cdk
+./scripts/destroy-stack.sh
+```
+
+## API user guide (end-to-end)
+
+### 1) Load endpoint and keys from stack outputs/secrets
+
+```bash
+STACK_NAME=PrivateLiteLlmMicrovmStack
+AWS_REGION=us-east-1
+
+PUBLIC_API_URL=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='PublicApiInvokeUrl'].OutputValue" --output text)
+
+API_KEY_SECRET_ARN=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='AwsGatewayApiKeySecretArn'].OutputValue" --output text)
+
+MASTER_KEY_SECRET_ARN=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='LiteLlmMasterKeySecretArn'].OutputValue" --output text)
+
+API_KEY_JSON=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
+MASTER_JSON=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$MASTER_KEY_SECRET_ARN" --query SecretString --output text)
+
+API_GATEWAY_KEY=$(python - <<'PY' "$API_KEY_JSON"
+import json,sys
+print(json.loads(sys.argv[1])["apiKey"])
+PY
+)
+
+LITELLM_MASTER_KEY=$(python - <<'PY' "$MASTER_JSON"
+import json,sys
+v=json.loads(sys.argv[1]); print((v.get("prefix") or "") + (v.get("suffix") or ""))
+PY
+)
+```
+
+### 2) Liveness check
+
+```bash
+curl -sS "${PUBLIC_API_URL%/}/health/liveliness" \
+  -H "x-api-key: $API_GATEWAY_KEY" \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+```
+
+### 3) Create a user key (recommended via script)
+
+```bash
+cd infra/cdk
+./scripts/create-api-key.sh --alias app-user --duration 7d --models nova-2-lite
+USER_KEY=$(cat .keys/app-user.txt)
+```
+
+Manual `/key/generate` call (if needed):
+
+```bash
+curl -sS -X POST "${PUBLIC_API_URL%/}/key/generate" \
+  -H "x-api-key: $API_GATEWAY_KEY" \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  --data-raw '{"key_alias":"manual-user","duration":"24h"}'
+```
+
+### 4) Call chat completions with user key
+
+```bash
+curl -sS -X POST "${PUBLIC_API_URL%/}/chat/completions" \
+  -H "x-api-key: $API_GATEWAY_KEY" \
+  -H "Authorization: Bearer $USER_KEY" \
+  -H "Content-Type: application/json" \
+  --data-raw '{
+    "model":"nova-2-lite",
+    "messages":[{"role":"user","content":"hello"}]
+  }'
+```
+
+### 5) Common errors
+
+| Symptom | Typical cause | Action |
+|---|---|---|
+| `403 Forbidden` from API Gateway | missing/invalid `x-api-key` | confirm `AwsGatewayApiKeySecretArn` value and header |
+| `401` from LiteLLM endpoints | missing/invalid Authorization bearer header | use master key for admin endpoints or valid generated user key |
+| `429` | usage-plan throttle/quota exceeded | use admin/public key on correct usage plan, then retry |
+| `500/502` on first requests | microVM startup/token lifecycle in progress | retry request; check proxy and microVM logs |
 
 ## API and logging behavior
 
