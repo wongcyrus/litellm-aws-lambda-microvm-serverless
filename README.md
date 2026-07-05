@@ -163,6 +163,13 @@ cd infra/cdk
 ./scripts/connect-admin-ui.sh
 ```
 Then open `http://127.0.0.1:8787/ui`.
+The script prints the LiteLLM admin login key (master key) to use in the web login view.
+This works in both public and private subnet modes because the script reads the stack's configured
+MicroVM egress connector and starts/uses a DB-capable MicroVM with direct MicroVM auth token flow.
+This direct MicroVM access pattern is AWS-supported: resolve endpoint (`GetMicrovm`) + create token
+(`CreateMicrovmAuthToken`) + send `X-aws-proxy-auth`/allowed port headers. Reachability from your
+client depends on ingress connector policy: with `ALL_INGRESS` it is directly reachable; with
+private-only ingress you need private connectivity (VPN/peering/bastion path) to reach the endpoint.
 
 Example:
 ```bash

@@ -23,6 +23,7 @@ Examples:
 Notes:
   * Connects directly to AWS Lambda MicroVM endpoint (not API Gateway).
   * Starts local proxy at http://127.0.0.1:<port>/ui
+  * Prints LiteLLM admin login key from Secrets Manager.
   * If no RUNNING MicroVM exists for stack image, script starts one unless --no-start is set.
   * MicroVM auth token expires; rerun script when expired.
 EOF
@@ -76,6 +77,11 @@ MICROVM_EXECUTION_ROLE_ARN="$(aws cloudformation describe-stacks \
   --region "$AWS_REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='MicrovmExecutionRoleArn'].OutputValue" \
   --output text)"
+MASTER_KEY_SECRET_ARN="$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
+  --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='LiteLlmMasterKeySecretArn'].OutputValue" \
+  --output text)"
 PROXY_FUNCTION_NAME="$(aws cloudformation describe-stack-resource \
   --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \
@@ -96,12 +102,33 @@ if [[ -z "$MICROVM_EXECUTION_ROLE_ARN" || "$MICROVM_EXECUTION_ROLE_ARN" == "None
   echo "Error: missing MicrovmExecutionRoleArn output on stack $STACK_NAME" >&2
   exit 1
 fi
+if [[ -z "$MASTER_KEY_SECRET_ARN" || "$MASTER_KEY_SECRET_ARN" == "None" ]]; then
+  echo "Error: missing LiteLlmMasterKeySecretArn output on stack $STACK_NAME" >&2
+  exit 1
+fi
 if [[ -z "$MICROVM_EGRESS_CONNECTOR_ARN" || "$MICROVM_EGRESS_CONNECTOR_ARN" == "None" ]]; then
   echo "Error: missing MICROVM_EGRESS_CONNECTOR_ARN in proxy function environment." >&2
   exit 1
 fi
 
-python - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH"
+MASTER_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$MASTER_KEY_SECRET_ARN" --query SecretString --output text)"
+MASTER_KEY="$(python - <<'PY' "$MASTER_KEY_JSON"
+import json
+import sys
+obj = json.loads(sys.argv[1])
+prefix = str(obj.get("prefix") or "")
+suffix = str(obj.get("suffix") or "")
+if not prefix or not suffix:
+    raise SystemExit("Master key secret JSON must contain prefix and suffix.")
+print(prefix + suffix)
+PY
+)"
+if [[ -z "$MASTER_KEY" ]]; then
+  echo "Error: resolved empty LiteLLM master key." >&2
+  exit 1
+fi
+
+python - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH" "$MASTER_KEY"
 import http.server
 import os
 import sys
@@ -121,6 +148,7 @@ token_minutes = int(sys.argv[6])
 listen_port = int(sys.argv[7])
 start_if_needed = sys.argv[8].lower() == "true"
 model_path = sys.argv[9]
+master_key = sys.argv[10]
 
 existing_data_path = os.environ.get("AWS_DATA_PATH")
 os.environ["AWS_DATA_PATH"] = model_path if not existing_data_path else f"{model_path}:{existing_data_path}"
@@ -294,6 +322,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 print(f"MicroVM ID: {microvm_id}")
 print(f"MicroVM endpoint: {microvm_endpoint}")
 print(f"Local admin proxy: http://127.0.0.1:{listen_port}/ui")
+print(f"LiteLLM admin login key: {master_key}")
 print("Press Ctrl+C to stop.")
 server = http.server.ThreadingHTTPServer(("127.0.0.1", listen_port), ProxyHandler)
 server.serve_forever()
