@@ -129,18 +129,19 @@ curl -X POST 'http://localhost:4000/key/generate' \
   }'
 ```
 
-### CDK deployment auth flow (2 keys required)
-When using the CDK stack API endpoint, `/key/generate` requires both:
-* API Gateway usage-plan key (accepted headers: `x-api-key`, `api-key`, `Authorization: Bearer <key>`, `x-goog-api-key`, `Ocp-Apim-Subscription-Key`, `x-litellm-api-key`)
-* LiteLLM master key in `Authorization: Bearer <master-key>`
+### CDK deployment auth flow
+When using the CDK stack API endpoint, API Gateway and LiteLLM are separate auth layers:
+* API Gateway usage-plan key in `x-api-key`.
+* LiteLLM key in `Authorization: Bearer <key>`.
 
-CDK creates both keys automatically and outputs their Secrets Manager ARNs:
+CDK outputs these auth-related values:
 * `AwsGatewayApiKeySecretArn` (JSON payload with `apiKey`)
 * `LiteLlmMasterKeySecretArn` (JSON payload with `prefix` + `suffix`, combine as master key)
 * `AwsGatewayUsagePlanId` (public/client usage plan)
 * `AwsGatewayAdminUsagePlanId` (admin/UI usage plan with higher burst throttle)
 
-Fetch both values for testing:
+For day-to-day calls, use one generated LiteLLM user key as `Authorization: Bearer <key>`.
+Fetch values for setup/testing:
 ```bash
 API_KEY=$(aws secretsmanager get-secret-value --secret-id <AwsGatewayApiKeySecretArn> --query SecretString --output text | jq -r '.apiKey')
 MASTER_KEY=$(aws secretsmanager get-secret-value --secret-id <LiteLlmMasterKeySecretArn> --query SecretString --output text | jq -r '.prefix + .suffix')
