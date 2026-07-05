@@ -161,6 +161,9 @@ Every API request requires both:
 1. API Gateway key in header `x-api-key`
 2. LiteLLM key in header `Authorization: Bearer <litellm-key>`
 
+> **Important:** Creating a key only in LiteLLM is not enough in this AWS setup.  
+> The same key value must also exist as an API Gateway API key and be attached to a usage plan, otherwise API Gateway rejects the request before LiteLLM sees it.
+
 Relevant stack outputs:
 
 - `PublicApiInvokeUrl`
@@ -237,6 +240,7 @@ Validation rules / fail-fast behavior:
 - Key must start with `sk-`.
 - Key length must be `20-128` (API Gateway limit).
 - Script fails if `/key/generate` does not return the exact requested key.
+- This script intentionally handles both sides (LiteLLM + API Gateway). Do not create LiteLLM-only keys for client traffic.
 
 ### `infra/cdk/scripts/connect-admin-ui.sh`
 
