@@ -197,10 +197,10 @@ Arguments:
 
 | Flag | Required | Description |
 |---|---|---|
+| `--usage-plan-id` | yes | API Gateway usage plan id to attach the key |
 | `--alias` | no | Key alias (`default: user-key`) |
 | `--duration` | no | LiteLLM key duration (`default: 24h`) |
 | `--models` | no | Comma-separated model allowlist |
-| `--usage-plan` | no | `public` or `admin` (`default: public`) |
 | `--key` | no | Use explicit key value instead of random generation |
 | `--output-file` | no | Output path (`default: .keys/<alias>.txt`) |
 | `--json` | no | Print full API response JSON instead of key only |
@@ -211,14 +211,17 @@ Examples:
 
 ```bash
 cd infra/cdk
-./scripts/create-api-key.sh --alias team-a --duration 7d --models nova-2-lite
-./scripts/create-api-key.sh --alias admin-ui --duration 7d --usage-plan admin
-./scripts/create-api-key.sh --alias ci --duration 24h --output-file .keys/ci.txt
+PUBLIC_PLAN_ID=$(aws cloudformation describe-stacks --stack-name PrivateLiteLlmMicrovmStack --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='AwsGatewayUsagePlanId'].OutputValue" --output text)
+ADMIN_PLAN_ID=$(aws cloudformation describe-stacks --stack-name PrivateLiteLlmMicrovmStack --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='AwsGatewayAdminUsagePlanId'].OutputValue" --output text)
+
+./scripts/create-api-key.sh --usage-plan-id "$PUBLIC_PLAN_ID" --alias team-a --duration 7d --models nova-2-lite
+./scripts/create-api-key.sh --usage-plan-id "$ADMIN_PLAN_ID" --alias admin-ui --duration 7d
+./scripts/create-api-key.sh --usage-plan-id "$PUBLIC_PLAN_ID" --alias ci --duration 24h --output-file .keys/ci.txt
 ```
 
 Expected output:
 
-- `Attached key to usage plan scope: <public|admin>`
+- `Attached key to usage plan id: <id>`
 - `Saved generated key to: <path>`
 - final line is generated key (unless `--json` is used)
 
@@ -337,7 +340,8 @@ curl -sS "${PUBLIC_API_URL%/}/health/liveliness" \
 
 ```bash
 cd infra/cdk
-./scripts/create-api-key.sh --alias app-user --duration 7d --models nova-2-lite
+PUBLIC_PLAN_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='AwsGatewayUsagePlanId'].OutputValue" --output text)
+./scripts/create-api-key.sh --usage-plan-id "$PUBLIC_PLAN_ID" --alias app-user --duration 7d --models nova-2-lite
 USER_KEY=$(cat .keys/app-user.txt)
 ```
 

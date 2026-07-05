@@ -9,17 +9,17 @@ MODEL_LIST=""
 OUTPUT_FILE=""
 PRINT_JSON=false
 CUSTOM_KEY=""
-USAGE_PLAN_SCOPE="public"
+USAGE_PLAN_ID=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/create-api-key.sh [--alias <key-alias>] [--duration <duration>] [--models <comma-separated-models>] [--usage-plan <public|admin>] [--key <explicit-key>] [--output-file <path>] [--json] [--stack <name>] [--region <aws-region>]
+  ./scripts/create-api-key.sh --usage-plan-id <id> [--alias <key-alias>] [--duration <duration>] [--models <comma-separated-models>] [--key <explicit-key>] [--output-file <path>] [--json] [--stack <name>] [--region <aws-region>]
 
 Examples:
-  ./scripts/create-api-key.sh --alias team-a --duration 7d --models nova-2-lite
-  ./scripts/create-api-key.sh --alias admin-ui --duration 7d --usage-plan admin
-  ./scripts/create-api-key.sh --alias ci-key --duration 24h --output-file .keys/ci_key.txt
+  ./scripts/create-api-key.sh --usage-plan-id abc123 --alias team-a --duration 7d --models nova-2-lite
+  ./scripts/create-api-key.sh --usage-plan-id abc123 --alias admin-ui --duration 7d
+  ./scripts/create-api-key.sh --usage-plan-id abc123 --alias ci-key --duration 24h --output-file .keys/ci_key.txt
 
 Notes:
   By default, the key is saved to .keys/<key-alias>.txt (chmod 600).
@@ -40,8 +40,8 @@ while [[ $# -gt 0 ]]; do
       MODEL_LIST="$2"
       shift 2
       ;;
-    --usage-plan)
-      USAGE_PLAN_SCOPE="$2"
+    --usage-plan-id)
+      USAGE_PLAN_ID="$2"
       shift 2
       ;;
     --key)
@@ -80,8 +80,8 @@ if [[ -z "$KEY_ALIAS" || -z "$DURATION" ]]; then
   echo "Error: --alias and --duration must be non-empty." >&2
   exit 1
 fi
-if [[ "$USAGE_PLAN_SCOPE" != "public" && "$USAGE_PLAN_SCOPE" != "admin" ]]; then
-  echo "Error: --usage-plan must be either 'public' or 'admin'." >&2
+if [[ -z "$USAGE_PLAN_ID" ]]; then
+  echo "Error: --usage-plan-id is required (no fallback)." >&2
   exit 1
 fi
 if [[ -z "$OUTPUT_FILE" ]]; then
@@ -98,11 +98,6 @@ stack_output() {
 }
 
 PUBLIC_API_URL="$(stack_output "PublicApiInvokeUrl")"
-if [[ "$USAGE_PLAN_SCOPE" == "admin" ]]; then
-  USAGE_PLAN_ID="$(stack_output "AwsGatewayAdminUsagePlanId")"
-else
-  USAGE_PLAN_ID="$(stack_output "AwsGatewayUsagePlanId")"
-fi
 API_KEY_SECRET_ARN="$(stack_output "AwsGatewayApiKeySecretArn")"
 MASTER_KEY_SECRET_ARN="$(stack_output "LiteLlmMasterKeySecretArn")"
 
@@ -114,12 +109,8 @@ if [[ -z "$API_KEY_SECRET_ARN" || "$API_KEY_SECRET_ARN" == "None" ]]; then
   echo "Error: missing AwsGatewayApiKeySecretArn output on stack $STACK_NAME" >&2
   exit 1
 fi
-if [[ -z "$USAGE_PLAN_ID" || "$USAGE_PLAN_ID" == "None" ]]; then
-  if [[ "$USAGE_PLAN_SCOPE" == "admin" ]]; then
-    echo "Error: missing AwsGatewayAdminUsagePlanId output on stack $STACK_NAME" >&2
-  else
-    echo "Error: missing AwsGatewayUsagePlanId output on stack $STACK_NAME" >&2
-  fi
+if [[ "$USAGE_PLAN_ID" == "None" ]]; then
+  echo "Error: --usage-plan-id cannot be 'None'." >&2
   exit 1
 fi
 if [[ -z "$MASTER_KEY_SECRET_ARN" || "$MASTER_KEY_SECRET_ARN" == "None" ]]; then
@@ -208,7 +199,7 @@ aws apigateway create-usage-plan-key \
   --usage-plan-id "$USAGE_PLAN_ID" \
   --key-id "$API_GATEWAY_KEY_ID" \
   --key-type API_KEY >/dev/null
-echo "Attached key to usage plan scope: $USAGE_PLAN_SCOPE"
+echo "Attached key to usage plan id: $USAGE_PLAN_ID"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 printf '%s\n' "$GENERATED_KEY" > "$OUTPUT_FILE"
