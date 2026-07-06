@@ -334,6 +334,35 @@ cd infra/cdk
 npx cdk destroy PrivateLiteLlmMicrovmStack --force -c microvmRegion=us-east-1 -c publicMicrovm=true
 ```
 
+### `infra/cdk/scripts/test-api-key-strands.py`
+
+Purpose:
+
+- Tests a generated key end-to-end using the **Strands Agents** framework against your API Gateway endpoint.
+- Verifies both auth layers in one run:
+  - API Gateway `x-api-key`
+  - LiteLLM `Authorization: Bearer ...`
+
+Prerequisite install (virtualenv recommended):
+
+```bash
+pip install 'strands-agents[openai]' strands-agents-tools
+```
+
+Run:
+
+```bash
+cd infra/cdk
+python scripts/test-api-key-strands.py \
+  --api-url "$PUBLIC_API_URL" \
+  --api-key-file .keys/app-user.txt \
+  --model nova-2-lite
+```
+
+Expected result:
+
+- exits `0` and prints JSON with `"status": "ok"` and model response text
+
 ## API user guide (end-to-end)
 
 ### 1) Load endpoint and keys from stack outputs/secrets
@@ -410,7 +439,18 @@ curl -sS -X POST "${PUBLIC_API_URL%/}/chat/completions" \
   }'
 ```
 
-### 5) Common errors
+### 5) Optional: test key with Strands framework
+
+```bash
+cd infra/cdk
+python scripts/test-api-key-strands.py \
+  --api-url "$PUBLIC_API_URL" \
+  --api-key "$USER_KEY" \
+  --model nova-2-lite \
+  --prompt "Reply with exactly: ok"
+```
+
+### 6) Common errors
 
 | Symptom | Typical cause | Action |
 |---|---|---|
