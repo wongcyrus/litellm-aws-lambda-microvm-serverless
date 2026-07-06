@@ -233,7 +233,7 @@ Arguments:
 | Flag | Required | Description |
 |---|---|---|
 | `--usage-plan-id` | yes | API Gateway usage plan id to attach the key |
-| `--alias` | no | Key alias (`default: user-key`) |
+| `--alias` | yes | Unique key alias in LiteLLM |
 | `--duration` | no | LiteLLM key duration (`default: 24h`) |
 | `--models` | no | Comma-separated model allowlist |
 | `--key` | no | Use explicit key value instead of random generation |

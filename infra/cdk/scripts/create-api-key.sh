@@ -3,7 +3,7 @@ set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-PrivateLiteLlmMicrovmStack}"
 AWS_REGION="${AWS_REGION:-${MICROVM_REGION:-${CDK_DEFAULT_REGION:-us-east-1}}}"
-KEY_ALIAS="user-key"
+KEY_ALIAS=""
 DURATION="24h"
 MODEL_LIST=""
 OUTPUT_FILE=""
@@ -14,7 +14,7 @@ USAGE_PLAN_ID=""
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/create-api-key.sh --usage-plan-id <id> [--alias <key-alias>] [--duration <duration>] [--models <comma-separated-models>] [--key <explicit-key>] [--output-file <path>] [--json] [--stack <name>] [--region <aws-region>]
+  ./scripts/create-api-key.sh --usage-plan-id <id> --alias <key-alias> [--duration <duration>] [--models <comma-separated-models>] [--key <explicit-key>] [--output-file <path>] [--json] [--stack <name>] [--region <aws-region>]
 
 Examples:
   ./scripts/create-api-key.sh --usage-plan-id abc123 --alias team-a --duration 7d --models nova-2-lite
@@ -76,8 +76,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$KEY_ALIAS" || -z "$DURATION" ]]; then
-  echo "Error: --alias and --duration must be non-empty." >&2
+if [[ -z "$KEY_ALIAS" ]]; then
+  echo "Error: --alias is required and must be unique in LiteLLM." >&2
+  exit 1
+fi
+if [[ -z "$DURATION" ]]; then
+  echo "Error: --duration must be non-empty." >&2
   exit 1
 fi
 if [[ -z "$USAGE_PLAN_ID" ]]; then
