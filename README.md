@@ -280,7 +280,7 @@ Purpose:
 
 - Opens local browser access to LiteLLM admin UI through direct MicroVM connection.
 - Does not use API Gateway for UI transport.
-- Prints LiteLLM master key for web login.
+- Saves LiteLLM master key for web login to a local file (not printed).
 
 Required IAM permissions:
 
@@ -300,6 +300,7 @@ Arguments:
 | `--port` | no | Local listen port (`default: 8787`) |
 | `--microvm-port` | no | Upstream app port on microVM (`default: 4000`) |
 | `--token-minutes` | no | Auth token TTL minutes (`default: 60`) |
+| `--master-key-file` | no | Output file for admin master key (`default: .keys/admin-master-key.txt`) |
 | `--no-start` | no | Fail if no RUNNING microVM exists |
 | `--stack` | no | CloudFormation stack name override |
 | `--region` | no | AWS region override |
@@ -316,9 +317,9 @@ Expected output:
 - `MicroVM ID: ...`
 - `MicroVM endpoint: ...`
 - `Local admin proxy: http://127.0.0.1:8787/ui`
-- `LiteLLM admin login key: ...`
+- `LiteLLM admin login key file: ...`
 
-Then open `http://127.0.0.1:8787/ui` and login with printed master key.
+Then open `http://127.0.0.1:8787/ui` and login using the key stored in that file.
 
 Direct-microVM reachability note:
 

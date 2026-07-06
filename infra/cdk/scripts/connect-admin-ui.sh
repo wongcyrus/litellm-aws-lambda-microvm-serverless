@@ -9,11 +9,12 @@ TOKEN_MINUTES="${TOKEN_MINUTES:-60}"
 START_IF_NEEDED=true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_PATH="$(cd "$SCRIPT_DIR/../lambda/botocore_data" && pwd)"
+MASTER_KEY_FILE="${MASTER_KEY_FILE:-$SCRIPT_DIR/../.keys/admin-master-key.txt}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/connect-admin-ui.sh [--port <local-port>] [--microvm-port <port>] [--token-minutes <minutes>] [--no-start] [--stack <name>] [--region <aws-region>]
+  ./scripts/connect-admin-ui.sh [--port <local-port>] [--microvm-port <port>] [--token-minutes <minutes>] [--master-key-file <path>] [--no-start] [--stack <name>] [--region <aws-region>]
 
 Examples:
   ./scripts/connect-admin-ui.sh
@@ -23,7 +24,7 @@ Examples:
 Notes:
   * Connects directly to AWS Lambda MicroVM endpoint (not API Gateway).
   * Starts local proxy at http://127.0.0.1:<port>/ui
-  * Prints LiteLLM admin login key from Secrets Manager.
+  * Saves LiteLLM admin login key from Secrets Manager to a local file (chmod 600).
   * If no RUNNING MicroVM exists for stack image, script starts one unless --no-start is set.
   * MicroVM auth token expires; rerun script when expired.
 EOF
@@ -41,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --token-minutes)
       TOKEN_MINUTES="$2"
+      shift 2
+      ;;
+    --master-key-file)
+      MASTER_KEY_FILE="$2"
       shift 2
       ;;
     --no-start)
@@ -128,7 +133,11 @@ if [[ -z "$MASTER_KEY" ]]; then
   exit 1
 fi
 
-python - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH" "$MASTER_KEY"
+mkdir -p "$(dirname "$MASTER_KEY_FILE")"
+printf '%s\n' "$MASTER_KEY" > "$MASTER_KEY_FILE"
+chmod 600 "$MASTER_KEY_FILE"
+
+python - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH" "$MASTER_KEY_FILE"
 import http.server
 import os
 import sys
@@ -148,7 +157,7 @@ token_minutes = int(sys.argv[6])
 listen_port = int(sys.argv[7])
 start_if_needed = sys.argv[8].lower() == "true"
 model_path = sys.argv[9]
-master_key = sys.argv[10]
+master_key_file = sys.argv[10]
 
 existing_data_path = os.environ.get("AWS_DATA_PATH")
 os.environ["AWS_DATA_PATH"] = model_path if not existing_data_path else f"{model_path}:{existing_data_path}"
@@ -322,7 +331,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 print(f"MicroVM ID: {microvm_id}")
 print(f"MicroVM endpoint: {microvm_endpoint}")
 print(f"Local admin proxy: http://127.0.0.1:{listen_port}/ui")
-print(f"LiteLLM admin login key: {master_key}")
+print(f"LiteLLM admin login key file: {master_key_file}")
 print("Press Ctrl+C to stop.")
 server = http.server.ThreadingHTTPServer(("127.0.0.1", listen_port), ProxyHandler)
 server.serve_forever()

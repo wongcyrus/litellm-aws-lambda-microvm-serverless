@@ -1,6 +1,7 @@
 .env
 test_litellm.sh
 .keys/
+infra/cdk/.keys/
 infra/cdk/node_modules/
 infra/cdk/dist/
 infra/cdk/cdk.out/
