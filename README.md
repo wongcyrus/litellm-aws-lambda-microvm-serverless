@@ -363,6 +363,35 @@ Expected result:
 
 - exits `0` and prints JSON with `"status": "ok"` and model response text
 
+### `infra/cdk/scripts/test-api-key-strands.sh` (wrapper)
+
+Purpose:
+
+- Wrapper for Strands test that creates/reuses a local virtualenv and installs Strands deps.
+- Resolves `PublicApiInvokeUrl` automatically from stack outputs if `--api-url` is not provided.
+- Sets runtime values for you (`STRANDS_API_URL`, `STRANDS_API_KEY`) and runs the Python test.
+
+Run with defaults (uses `.keys/user-key.txt`):
+
+```bash
+cd infra/cdk
+./scripts/test-api-key-strands.sh
+```
+
+Run with explicit key file:
+
+```bash
+./scripts/test-api-key-strands.sh --api-key-file .keys/app-user.txt
+```
+
+Run with explicit endpoint + key:
+
+```bash
+./scripts/test-api-key-strands.sh \
+  --api-url "https://<id>.execute-api.us-east-1.amazonaws.com/prod/" \
+  --api-key "sk-..."
+```
+
 ## API user guide (end-to-end)
 
 ### 1) Load endpoint and keys from stack outputs/secrets
@@ -443,11 +472,7 @@ curl -sS -X POST "${PUBLIC_API_URL%/}/chat/completions" \
 
 ```bash
 cd infra/cdk
-python scripts/test-api-key-strands.py \
-  --api-url "$PUBLIC_API_URL" \
-  --api-key "$USER_KEY" \
-  --model nova-2-lite \
-  --prompt "Reply with exactly: ok"
+./scripts/test-api-key-strands.sh --api-key "$USER_KEY" --api-url "$PUBLIC_API_URL"
 ```
 
 ### 6) Common errors
