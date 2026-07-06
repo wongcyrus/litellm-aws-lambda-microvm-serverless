@@ -1,5 +1,7 @@
 # LiteLLM AWS Lambda MicroVM Serverless
 
+![Logo](./logo.png)
+
 AWS-only deployment of LiteLLM on Lambda MicroVM with Aurora Serverless v2, API Gateway, and CDK.
 
 ## Architecture
