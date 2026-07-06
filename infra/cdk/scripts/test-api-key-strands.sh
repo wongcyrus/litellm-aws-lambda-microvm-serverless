@@ -3,10 +3,12 @@ set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-PrivateLiteLlmMicrovmStack}"
 AWS_REGION="${AWS_REGION:-${CDK_DEFAULT_REGION:-us-east-1}}"
-VENV_DIR="${VENV_DIR:-.venv-strands}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CDK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_DIR="${VENV_DIR:-$CDK_DIR/.venv-strands}"
 API_URL="${API_URL:-}"
 API_KEY="${API_KEY:-}"
-API_KEY_FILE="${API_KEY_FILE:-.keys/user-key.txt}"
+API_KEY_FILE="${API_KEY_FILE:-$CDK_DIR/.keys/user-key.txt}"
 MODEL="${MODEL:-nova-2-lite}"
 PROMPT="${PROMPT:-Reply with exactly: ok}"
 MAX_TOKENS="${MAX_TOKENS:-128}"
@@ -143,7 +145,7 @@ echo "Using key source: ${API_KEY:+--api-key}${API_KEY_FILE:+$API_KEY_FILE}"
 echo "Using venv: $VENV_DIR"
 
 if [[ -n "$API_KEY" ]]; then
-  "$PYTHON_BIN" scripts/test-api-key-strands.py \
+  "$PYTHON_BIN" "$SCRIPT_DIR/test-api-key-strands.py" \
     --api-url "$STRANDS_API_URL" \
     --api-key "$STRANDS_API_KEY" \
     --model "$MODEL" \
@@ -151,7 +153,7 @@ if [[ -n "$API_KEY" ]]; then
     --max-tokens "$MAX_TOKENS" \
     --temperature "$TEMPERATURE"
 else
-  "$PYTHON_BIN" scripts/test-api-key-strands.py \
+  "$PYTHON_BIN" "$SCRIPT_DIR/test-api-key-strands.py" \
     --api-url "$STRANDS_API_URL" \
     --api-key-file "$API_KEY_FILE" \
     --model "$MODEL" \
