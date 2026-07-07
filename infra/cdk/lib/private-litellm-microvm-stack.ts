@@ -19,6 +19,12 @@ import * as cr from "aws-cdk-lib/custom-resources";
 
 export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   microvmRegion: string;
+  vertexAiProject: string;
+  vertexAiLocation: string;
+  vertexCredentialsJson: string;
+  azureApiBase: string;
+  azureApiKey: string;
+  azureApiVersion: string;
   microvmArtifactKey?: string;
   microvmEgressConnectorArn?: string;
   microvmContainerBaseImage?: string;
@@ -263,21 +269,25 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     dbCluster.secret?.grantRead(microvmExecutionRole);
 
     const connectorOperatorRole = new iam.Role(this, "NetworkConnectorOperatorRole", {
-      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com")
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      inlinePolicies: {
+        ConnectorEc2Access: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              actions: [
+                "ec2:CreateNetworkInterface",
+                "ec2:DeleteNetworkInterface",
+                "ec2:AssignPrivateIpAddresses",
+                "ec2:UnassignPrivateIpAddresses",
+                "ec2:CreateTags",
+                "ec2:Describe*"
+              ],
+              resources: ["*"]
+            })
+          ]
+        })
+      }
     });
-    connectorOperatorRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "ec2:CreateNetworkInterface",
-          "ec2:DeleteNetworkInterface",
-          "ec2:AssignPrivateIpAddresses",
-          "ec2:UnassignPrivateIpAddresses",
-          "ec2:CreateTags",
-          "ec2:Describe*"
-        ],
-        resources: ["*"]
-      })
-    );
 
     const managedEgressConnector = props.microvmEgressConnectorArn
       ? undefined
@@ -514,7 +524,13 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
               litellmMasterKeySecret.secretValueFromJson("suffix").toString()
             ])
           },
-          { Key: "STORE_MODEL_IN_DB", Value: "True" },
+          { Key: "VERTEXAI_PROJECT", Value: props.vertexAiProject },
+          { Key: "VERTEXAI_LOCATION", Value: props.vertexAiLocation },
+          { Key: "VERTEX_CREDENTIALS", Value: props.vertexCredentialsJson },
+          { Key: "AZURE_API_BASE", Value: props.azureApiBase },
+          { Key: "AZURE_API_KEY", Value: props.azureApiKey },
+          { Key: "AZURE_API_VERSION", Value: props.azureApiVersion },
+          { Key: "STORE_MODEL_IN_DB", Value: "False" },
           { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" }
         ],
         Hooks: {},
@@ -527,118 +543,42 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       logGroupName: cdk.Fn.join("", ["/aws/lambda-microvms/", microvmImageName]),
       retention: logs.RetentionDays.ONE_WEEK
     });
-    if (false) {
-      const litellmReadyCheckFunction = new lambda.Function(this, "LitellmReadyCheckFunction", {
+    const microvmCleanupFunction = new lambda.Function(this, "MicrovmCleanupFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
-      handler: "index.handler",
+      handler: "microvm_cleanup.handler",
       timeout: cdk.Duration.minutes(5),
-      code: lambda.Code.fromInline(`
-import json
-import time
-import boto3
-from botocore.exceptions import ClientError
-
-_lambda = boto3.client("lambda")
-_microvms = boto3.client("lambda-microvms")
-
-def _terminate_stack_microvms(microvm_identifier: str):
-    paginator = _microvms.get_paginator("list_microvms")
-    found_ids = []
-    for page in paginator.paginate():
-        for item in page.get("items", []):
-            image_arn = str(item.get("imageArn") or "")
-            if image_arn == microvm_identifier or image_arn.endswith(f":microvm-image:{microvm_identifier}"):
-                microvm_id = str(item.get("microvmId") or "")
-                state = str(item.get("state") or "")
-                if microvm_id and state != "TERMINATED":
-                    found_ids.append(microvm_id)
-
-    for microvm_id in found_ids:
-        try:
-            _microvms.terminate_microvm(microvmIdentifier=microvm_id)
-        except ClientError as error:
-            code = (error.response.get("Error") or {}).get("Code")
-            if code not in {"ResourceNotFoundException", "ValidationException"}:
-                raise
-
-def handler(event, context):
-    props = event.get("ResourceProperties") or {}
-    microvm_identifier = str(props.get("MicrovmImageIdentifier") or "")
-    if not microvm_identifier:
-        raise RuntimeError("MicrovmImageIdentifier is required for readiness check custom resource.")
-
-    if event.get("RequestType") == "Delete":
-        _terminate_stack_microvms(microvm_identifier)
-        physical_id = str(event.get("PhysicalResourceId") or "litellm-ready-check")
-        return {"PhysicalResourceId": physical_id[:256]}
-
-    function_name = str(props.get("ProxyFunctionName") or "")
-    max_attempts = int(props.get("MaxAttempts") or 60)
-    delay_seconds = int(props.get("DelaySeconds") or 5)
-    nonce = str(props.get("Nonce") or "static")
-    if not function_name:
-        raise RuntimeError("ProxyFunctionName is required for readiness check.")
-
-    payload = {
-        "httpMethod": "GET",
-        "path": "/health/liveliness",
-        "headers": {},
-        "queryStringParameters": None,
-        "body": None,
-        "isBase64Encoded": False,
-    }
-    last_status = 0
-    last_body = ""
-    for _ in range(max_attempts):
-        response = _lambda.invoke(
-            FunctionName=function_name,
-            InvocationType="RequestResponse",
-            Payload=json.dumps(payload).encode("utf-8"),
-        )
-        body = response["Payload"].read()
-        result = json.loads(body.decode("utf-8") or "{}")
-        last_status = int(result.get("statusCode") or 0)
-        last_body = str(result.get("body") or "")
-        if last_status == 200:
-            return {"PhysicalResourceId": f"litellm-ready-check-{nonce}"}
-        time.sleep(delay_seconds)
-
-    raise RuntimeError(f"LiteLLM readiness check failed. lastStatus={last_status}")
-      `)
+      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda")),
+      environment: {
+        MICROVM_REGION: props.microvmRegion
+      }
     });
-      proxyFunction.grantInvoke(litellmReadyCheckFunction);
-      litellmReadyCheckFunction.addToRolePolicy(
-        new iam.PolicyStatement({
-          actions: ["lambda-microvms:ListMicrovms", "lambda-microvms:TerminateMicrovm"],
-          resources: ["*"]
-        })
-      );
-      const litellmReadyCheckProvider = new cr.Provider(this, "LitellmReadyCheckProvider", {
-        onEventHandler: litellmReadyCheckFunction
-      });
-      const litellmReadyCheck = new cdk.CustomResource(this, "LitellmReadyCheck", {
-        serviceToken: litellmReadyCheckProvider.serviceToken,
-        properties: {
-          ProxyFunctionName: proxyFunction.functionName,
-          MaxAttempts: 60,
-          DelaySeconds: 5,
-          Nonce: props.readinessCheckNonce,
-          MicrovmImageIdentifier: resolvedMicrovmImageIdentifier
-        }
-      });
-      litellmReadyCheck.node.addDependency(microvmImage);
-      litellmReadyCheck.node.addDependency(api.deploymentStage);
-    }
+    microvmCleanupFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["lambda:ListMicrovms", "lambda:TerminateMicrovm"],
+        resources: ["*"]
+      })
+    );
+    const microvmCleanupProvider = new cr.Provider(this, "MicrovmCleanupProvider", {
+      onEventHandler: microvmCleanupFunction
+    });
+    const microvmCleanup = new cdk.CustomResource(this, "MicrovmCleanupOnDelete", {
+      serviceToken: microvmCleanupProvider.serviceToken,
+      properties: {
+        MicrovmImageIdentifier: resolvedMicrovmImageIdentifier
+      }
+    });
+    microvmCleanup.node.addDependency(microvmImage);
     const iamKeyMappingBootstrapFunction = new lambda.Function(this, "IamKeyMappingBootstrapFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
-      timeout: cdk.Duration.minutes(2),
+      timeout: cdk.Duration.minutes(5),
       code: lambda.Code.fromInline(`
 import base64
 import hashlib
 import json
 import secrets
 import string
+import time
 
 import boto3
 
@@ -660,6 +600,15 @@ def _master_key_from_secret(secret_arn: str) -> str:
 def _generate_key() -> str:
     chars = string.ascii_letters + string.digits
     return "sk-" + "".join(secrets.choice(chars) for _ in range(45))
+
+
+def _get_existing_mapping(table_name: str, principal_arn: str) -> dict | None:
+    item = ddb.get_item(
+        TableName=table_name,
+        Key={"principal_arn": {"S": principal_arn}},
+        ConsistentRead=True,
+    ).get("Item")
+    return item if item else None
 
 
 def _invoke_key_generate(proxy_function_name: str, master_key: str, key_alias: str, key_value: str, duration: str):
@@ -699,8 +648,34 @@ def _invoke_key_generate(proxy_function_name: str, master_key: str, key_alias: s
         raise RuntimeError("LiteLLM returned a different key than requested.")
 
 
+def _wait_until_litellm_ready(proxy_function_name: str, max_attempts: int = 60, delay_seconds: int = 2) -> None:
+    event = {
+        "httpMethod": "GET",
+        "path": "/health/liveliness",
+        "headers": {},
+        "queryStringParameters": None,
+        "body": None,
+        "isBase64Encoded": False,
+    }
+    last_status = 0
+    for _ in range(max_attempts):
+        invoke_resp = lambda_client.invoke(
+            FunctionName=proxy_function_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(event).encode("utf-8"),
+        )
+        payload = invoke_resp["Payload"].read().decode("utf-8") or "{}"
+        result = json.loads(payload)
+        last_status = int(result.get("statusCode") or 0)
+        if last_status == 200:
+            return
+        time.sleep(delay_seconds)
+    raise RuntimeError(f"LiteLLM not ready for key bootstrap. lastStatus={last_status}")
+
+
 def handler(event, context):
     props = event.get("ResourceProperties") or {}
+    old_props = event.get("OldResourceProperties") or {}
     principal_arn = str(props.get("PrincipalArn") or "")
     table_name = str(props.get("TableName") or "")
     proxy_function_name = str(props.get("ProxyFunctionName") or "")
@@ -712,11 +687,32 @@ def handler(event, context):
 
     physical_id = event.get("PhysicalResourceId") or f"iam-key-map-{hashlib.sha256(principal_arn.encode('utf-8')).hexdigest()[:16]}"
     request_type = event.get("RequestType")
+    if request_type not in {"Create", "Update", "Delete"}:
+        raise RuntimeError(f"Unsupported request type: {request_type}")
+
+    old_principal_arn = str(old_props.get("PrincipalArn") or "")
+    old_table_name = str(old_props.get("TableName") or table_name)
+
     if request_type == "Delete":
         ddb.delete_item(TableName=table_name, Key={"principal_arn": {"S": principal_arn}})
+        if old_principal_arn and old_principal_arn != principal_arn:
+            ddb.delete_item(TableName=old_table_name, Key={"principal_arn": {"S": old_principal_arn}})
         return {"PhysicalResourceId": physical_id}
 
-    if request_type == "Create":
+    if request_type == "Update" and old_principal_arn and old_principal_arn != principal_arn:
+        ddb.delete_item(TableName=old_table_name, Key={"principal_arn": {"S": old_principal_arn}})
+
+    existing = _get_existing_mapping(table_name, principal_arn)
+    existing_alias = ""
+    existing_key = ""
+    if existing:
+        existing_alias = str(existing.get("key_alias", {}).get("S") or "")
+        existing_key = str(existing.get("litellm_key", {}).get("S") or "")
+        if existing_alias == key_alias and existing_key:
+            return {"PhysicalResourceId": physical_id}
+
+    if request_type in {"Create", "Update"}:
+        _wait_until_litellm_ready(proxy_function_name)
         master_key = _master_key_from_secret(master_key_secret_arn)
         generated_key = _generate_key()
         _invoke_key_generate(proxy_function_name, master_key, key_alias, generated_key, duration)

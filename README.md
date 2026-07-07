@@ -163,7 +163,93 @@ sequenceDiagram
   APIGW-->>Client: HTTP response
 ```
 
+### Proxy token-cache flow (no magic)
+
+```text
+1) Proxy resolves active MicroVM (id + endpoint).
+2) Proxy cache key stores:
+   - microvm_id
+   - microvm_endpoint
+   - token
+   - token_expires_at
+   - token_microvm_id
+3) Reuse token only when:
+   - token not near expiry, AND
+   - token_microvm_id == current microvm_id
+4) If MicroVM changes (replace/restart/new version), invalidate cached token first.
+5) Generate new X-aws-proxy-auth token for the current microVM id and persist.
+```
+
+### Stale-token bug and fix
+
+- Symptom: intermittent `403 Token authentication failed` after MicroVM replacement/rotation.
+- Root cause: cached MicroVM auth token could be reused after VM id changed.
+- Fix in `infra/cdk/lambda/microvm_proxy.py`:
+  - bind cached token to `token_microvm_id`
+  - invalidate token when active `microvm_id` changes or cached VM lookup fails
+  - persist/load `token_microvm_id` in DynamoDB cache item
+
+This prevents proxy forwarding a token issued for a deleted/old MicroVM.
+
+### Why proxy uses DynamoDB (design)
+
+The proxy Lambda uses DynamoDB by design for two different data classes:
+
+1. `MicrovmProxyCacheTable` (**cache/coordination state**)
+   - stores `microvm_id`, `microvm_endpoint`, `token`, `token_expires_at`, `token_microvm_id`
+   - purpose: share hot state across Lambda cold starts and concurrent execution environments
+   - without this shared state, each Lambda environment would behave independently and repeatedly create tokens/start checks
+
+2. `IamPrincipalKeyMapTable` (**authorization mapping source of truth**)
+   - stores IAM principal ARN -> LiteLLM key mapping
+   - used only for `/iam/...` route authorization/injection
+   - this is not a cache; it is the persistent auth mapping data model
+
+So DynamoDB is not only for caching. One table is runtime cache coordination, the other is persistent IAM auth mapping.
+
 ## Deploy
+
+Edit `infra/cdk/cdk-settings.yaml` first:
+
+```yaml
+microvmRegion: us-east-1
+vertexAiProject: <gcp-project-id>
+vertexAiLocation: <gcp-region>
+vertexCredentialsFile: /absolute/path/to/vertex-service-account.json
+azureOpenAiConfigFile: /absolute/path/to/azure-openai.json
+publicMicrovm: true
+useCodebuildEcrBaseImage: false
+```
+
+Or set credentials file path outside settings:
+
+```bash
+export VERTEX_CREDENTIALS_FILE=/absolute/path/to/vertex-service-account.json
+# or pass context: -c vertexCredentialsFile=/absolute/path/to/vertex-service-account.json
+```
+
+Azure OpenAI config file format:
+
+```json
+{
+  "apiBase": "https://YOUR_AZURE_OPENAI_RESOURCE.openai.azure.com",
+  "apiKey": "YOUR_AZURE_OPENAI_API_KEY",
+  "apiVersion": "2024-08-01-preview"
+}
+```
+
+Set Azure config file path:
+
+```bash
+export AZURE_OPENAI_CONFIG_FILE=/absolute/path/to/azure-openai.json
+# or pass context: -c azureOpenAiConfigFile=/absolute/path/to/azure-openai.json
+```
+
+Mock file in repo:
+
+```text
+infra/cdk/examples/azure-openai.mock.json
+```
 
 Deploy and save stack outputs to `output.json`:
 
@@ -176,7 +262,8 @@ Private mode (NAT enabled) with custom output file:
 
 ```bash
 cd infra/cdk
-./scripts/deploy-stack.sh --public-microvm false --output-file output.json
+# set publicMicrovm: false in cdk-settings.yaml
+./scripts/deploy-stack.sh --output-file output.json
 ```
 
 Direct CDK commands (equivalent):
@@ -185,26 +272,54 @@ Direct CDK commands (equivalent):
 cd infra/cdk
 npm install
 npm run build
-npx cdk deploy PrivateLiteLlmMicrovmStack --require-approval never -c microvmRegion=us-east-1 -c publicMicrovm=true
+npx cdk deploy PrivateLiteLlmMicrovmStack --require-approval never -c settingsFile=cdk-settings.yaml
 ```
 
 Private-mode deployment (NAT enabled):
 
 ```bash
-npx cdk deploy PrivateLiteLlmMicrovmStack --require-approval never -c microvmRegion=us-east-1 -c publicMicrovm=false
+npx cdk deploy PrivateLiteLlmMicrovmStack --require-approval never -c settingsFile=cdk-settings.yaml -c publicMicrovm=false
 ```
 
 Optional base-image modes:
 
 ```bash
-# use mirrored private ECR base image (after starting CodeBuild mirror project)
-npx cdk deploy PrivateLiteLlmMicrovmStack -c microvmRegion=us-east-1 -c useCodebuildEcrBaseImage=true
-
-# force explicit base image
-npx cdk deploy PrivateLiteLlmMicrovmStack -c microvmRegion=us-east-1 -c microvmContainerBaseImage=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>
+# set these in cdk-settings.yaml:
+#   useCodebuildEcrBaseImage: true
+#   microvmContainerBaseImage: "<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>"
+npx cdk deploy PrivateLiteLlmMicrovmStack -c settingsFile=cdk-settings.yaml
 ```
 
 ## Auth model (two layers)
+
+### Master key + request key flow (draw first)
+
+```text
+CDK deploy
+  ├─ Secrets Manager: LiteLlmMasterKeySecretArn  -> {"prefix":"sk-","suffix":"..."}
+  ├─ Secrets Manager: AwsGatewayApiKeySecretArn  -> {"apiKey":"..."}
+  ├─ MicroVM image env: LITELLM_MASTER_KEY = prefix+suffix
+  └─ API Gateway API key value = AwsGatewayApiKeySecretArn.apiKey
+
+Admin key creation (create-api-key.sh / create-iam-key-mapping.sh)
+  1) Read AwsGatewayApiKeySecretArn.apiKey
+  2) Read LiteLlmMasterKeySecretArn.(prefix+suffix)
+  3) Call POST /key/generate with:
+       x-api-key: <gateway key>           (API Gateway layer)
+       Authorization: Bearer <master key> (LiteLLM admin layer)
+  4) LiteLLM returns generated user key (sk-...)
+  5) Script creates API Gateway API key with SAME sk-... and attaches usage plan
+
+Runtime client call (/chat/completions etc.)
+  - x-api-key: sk-...                -> must exist in API Gateway usage plan
+  - Authorization: Bearer sk-...     -> must exist in LiteLLM key store
+```
+
+Master key scope:
+
+- `LITELLM_MASTER_KEY` is for LiteLLM admin operations (`/key/generate`, admin UI login).
+- API Gateway does **not** use the master key for request auth.
+- API Gateway uses API keys in usage plans (first-layer gate).
 
 Every API request requires both:
 
@@ -282,17 +397,16 @@ Arguments:
 
 | Flag | Required | Description |
 |---|---|---|
-| `--public-microvm` | no | `true` or `false` (`default: true`) |
+| `--config` | no | CDK settings YAML path (`default: cdk-settings.yaml`) |
 | `--output-file` | no | Output JSON path relative to `infra/cdk` (`default: output.json`) |
 | `--stack` | no | CloudFormation stack name override |
-| `--region` | no | AWS region override |
 
 Examples:
 
 ```bash
 cd infra/cdk
 ./scripts/deploy-stack.sh
-./scripts/deploy-stack.sh --public-microvm false --output-file output.json
+./scripts/deploy-stack.sh --config cdk-settings.yaml --output-file output.json
 ```
 
 ### `infra/cdk/scripts/create-api-key.sh`
@@ -356,6 +470,31 @@ Validation rules / fail-fast behavior:
 - Script fails if `/key/generate` does not return the exact requested key.
 - This script intentionally handles both sides (LiteLLM + API Gateway). Do not create LiteLLM-only keys for client traffic.
 
+### `infra/cdk/scripts/create-vertex-service-account.sh`
+
+Purpose:
+
+- Creates a Google service account key JSON for LiteLLM Vertex Gemini calls.
+- Enables Vertex AI API and grants minimum available role in this setup: `roles/aiplatform.user`.
+
+Arguments:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--project-id` | yes | GCP project id |
+| `--service-account-id` | no | Service account id (`default: litellm-vertex-gemini`) |
+| `--display-name` | no | Service account display name |
+| `--output-file` | no | JSON key output path (`default: .keys/vertex-<project>-<id>.json`) |
+| `--overwrite` | no | `true` to overwrite existing output file |
+| `--grant-service-usage-consumer` | no | `true` to also grant `roles/serviceusage.serviceUsageConsumer` |
+
+Example:
+
+```bash
+cd infra/cdk
+./scripts/create-vertex-service-account.sh --project-id my-gcp-project
+```
+
 ### `infra/cdk/scripts/connect-admin-ui.sh`
 
 Purpose:
@@ -414,7 +553,7 @@ Run:
 
 ```bash
 cd infra/cdk
-npx cdk destroy PrivateLiteLlmMicrovmStack --force -c microvmRegion=us-east-1 -c publicMicrovm=true
+npx cdk destroy PrivateLiteLlmMicrovmStack --force -c settingsFile=cdk-settings.yaml
 ```
 
 ### `infra/cdk/scripts/create-iam-key-mapping.sh`
@@ -544,6 +683,78 @@ Run with explicit endpoint + key:
   --api-key "sk-..."
 ```
 
+### `infra/cdk/scripts/test-aws-strands.sh`
+
+Purpose:
+
+- Runs API-key Strands checks for all AWS-backed models in config.
+- Sends `hi` to each model and fails fast on first failing model.
+
+Models covered:
+
+- `nova-2-lite`
+- `minimax-m2.5`
+- `kimi-k2.5`
+
+Run:
+
+```bash
+cd infra/cdk
+./scripts/test-aws-strands.sh
+```
+
+### `infra/cdk/scripts/test-gcp-strands.sh`
+
+Purpose:
+
+- Runs API-key Strands checks for all GCP/Vertex-backed Gemini models in config.
+- Sends `hi` to each model and fails fast on first failing model.
+
+Models covered:
+
+- `gemini-3.5-flash`
+- `gemini-3.1-flash-lite`
+- `gemini-3.1-flash-image-preview`
+- `gemini-3.1-pro-preview`
+- `gemini-3.1-pro-preview-customtools`
+- `gemini-2.5-pro`
+- `gemini-2.5-flash`
+- `gemini-2.5-flash-lite`
+
+Run:
+
+```bash
+cd infra/cdk
+./scripts/test-gcp-strands.sh
+```
+
+### `infra/cdk/scripts/test-azure-strands.sh`
+
+Purpose:
+
+- Runs API-key Strands checks for all Azure models in config.
+- Sends `hi` to each model and fails fast on first failing model.
+
+Models covered:
+
+- `gpt-5.2`
+- `gpt-5.4-mini`
+- `gpt-5.4-nano`
+- `gpt-5.4`
+
+Run:
+
+```bash
+cd infra/cdk
+./scripts/test-azure-strands.sh
+```
+
+Optional overrides for all provider test scripts:
+
+```bash
+PROMPT="hi" MAX_TOKENS=64 TEMPERATURE=0.0 ./scripts/test-aws-strands.sh --api-key-file .keys/user-key.txt
+```
+
 ### `infra/cdk/scripts/test-iam-strands.py`
 
 Purpose:
@@ -607,11 +818,10 @@ API_KEY_SECRET_ARN=$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" --region "$AWS_REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='AwsGatewayApiKeySecretArn'].OutputValue" --output text)
 
+API_KEY_JSON=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
 MASTER_KEY_SECRET_ARN=$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" --region "$AWS_REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='LiteLlmMasterKeySecretArn'].OutputValue" --output text)
-
-API_KEY_JSON=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)
 MASTER_JSON=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$MASTER_KEY_SECRET_ARN" --query SecretString --output text)
 
 API_GATEWAY_KEY=$(python - <<'PY' "$API_KEY_JSON"
@@ -768,5 +978,5 @@ infra/cdk/
 
 ```bash
 cd infra/cdk
-npx cdk destroy PrivateLiteLlmMicrovmStack --force -c microvmRegion=us-east-1 -c publicMicrovm=true
+npx cdk destroy PrivateLiteLlmMicrovmStack --force -c settingsFile=cdk-settings.yaml
 ```

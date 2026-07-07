@@ -3,6 +3,7 @@ set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-PrivateLiteLlmMicrovmStack}"
 AWS_REGION="${AWS_REGION:-${MICROVM_REGION:-${CDK_DEFAULT_REGION:-us-east-1}}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRINCIPAL_ARN=""
 KEY_ALIAS=""
 DURATION="24h"

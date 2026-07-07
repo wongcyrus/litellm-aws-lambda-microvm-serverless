@@ -3,6 +3,7 @@ set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-PrivateLiteLlmMicrovmStack}"
 AWS_REGION="${AWS_REGION:-${MICROVM_REGION:-${CDK_DEFAULT_REGION:-us-east-1}}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEY_ALIAS=""
 DURATION="24h"
 MODEL_LIST=""
@@ -121,7 +122,6 @@ if [[ -z "$MASTER_KEY_SECRET_ARN" || "$MASTER_KEY_SECRET_ARN" == "None" ]]; then
   echo "Error: missing LiteLlmMasterKeySecretArn output on stack $STACK_NAME" >&2
   exit 1
 fi
-
 API_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)"
 API_GATEWAY_KEY="$(python -c 'import json,sys; print(json.loads(sys.stdin.read())["apiKey"])' <<<"$API_KEY_JSON")"
 MASTER_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$MASTER_KEY_SECRET_ARN" --query SecretString --output text)"

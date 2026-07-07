@@ -13,3 +13,93 @@ model_list:
     litellm_params:
       model: bedrock/moonshotai.kimi-k2.5
       aws_region_name: "us-east-1"      
+
+  # Azure OpenAI Configuration
+  - model_name: gpt-5.2
+    litellm_params:
+      model: azure/gpt-5.2
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      api_version: os.environ/AZURE_API_VERSION
+      drop_params: true
+
+  - model_name: gpt-5.4-mini
+    litellm_params:
+      model: azure/gpt-5.4-mini
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      api_version: os.environ/AZURE_API_VERSION
+      drop_params: true
+
+  - model_name: gpt-5.4-nano
+    litellm_params:
+      model: azure/gpt-5.4-nano
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      api_version: os.environ/AZURE_API_VERSION
+      drop_params: true
+
+  - model_name: gpt-5.4
+    litellm_params:
+      model: azure/gpt-5.4
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+      api_version: os.environ/AZURE_API_VERSION
+      drop_params: true
+
+  # Gemini (current Vertex text/chat models)
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-3.1-flash-lite
+    litellm_params:
+      model: vertex_ai/gemini-3.1-flash-lite
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-3.1-flash-image-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-flash-image-preview
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-3.1-pro-preview-customtools
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: vertex_ai/gemini-2.5-pro
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: us-central1
+
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: us-central1
+
+  - model_name: gemini-2.5-flash-lite
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash-lite
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: us-central1

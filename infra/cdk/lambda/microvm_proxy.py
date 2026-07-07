@@ -33,6 +33,7 @@ _core_client = boto3.client("lambda-core", region_name=MICROVM_REGION)
 _cache: dict[str, Any] = {
     "token": None,
     "token_expires_at": 0.0,
+    "token_microvm_id": None,
     "microvm_id": None,
     "microvm_endpoint": None,
     "egress_connector_arn": None,
@@ -99,9 +100,11 @@ def _load_cache_from_dynamodb() -> None:
     token_expires_at = float(item.get("token_expires_at", {}).get("N", "0") or 0)
     if token_expires_at > now:
         token = item.get("token", {}).get("S")
-        if token:
+        token_microvm_id = item.get("token_microvm_id", {}).get("S")
+        if token and token_microvm_id:
             _cache["token"] = token
             _cache["token_expires_at"] = token_expires_at
+            _cache["token_microvm_id"] = token_microvm_id
 
     microvm_expires_at = float(item.get("microvm_expires_at", {}).get("N", "0") or 0)
     if microvm_expires_at > now:
@@ -129,6 +132,8 @@ def _persist_cache_to_dynamodb() -> None:
     item: dict[str, Any] = {"pk": {"S": MICROVM_CACHE_KEY}, "expires_at": {"N": str(ttl_expires_at)}}
     if _cache.get("token"):
         item["token"] = {"S": str(_cache["token"])}
+    if _cache.get("token_microvm_id"):
+        item["token_microvm_id"] = {"S": str(_cache["token_microvm_id"])}
     if token_expires_at > 0:
         item["token_expires_at"] = {"N": str(token_expires_at)}
     if _cache.get("microvm_id"):
@@ -141,6 +146,21 @@ def _persist_cache_to_dynamodb() -> None:
         item["egress_connector_arn"] = {"S": str(_cache["egress_connector_arn"])}
 
     _dynamodb.put_item(TableName=PROXY_CACHE_TABLE_NAME, Item=item)
+
+
+def _invalidate_cached_token() -> None:
+    _cache["token"] = None
+    _cache["token_expires_at"] = 0.0
+    _cache["token_microvm_id"] = None
+
+
+def _set_active_microvm(microvm_id: str, endpoint: str) -> None:
+    if str(_cache.get("microvm_id") or "") != str(microvm_id):
+        _invalidate_cached_token()
+    _cache["microvm_id"] = microvm_id
+    _cache["microvm_endpoint"] = endpoint
+    _cache["microvm_expires_at"] = time.time() + MICROVM_MAX_DURATION_SECONDS
+    _persist_cache_to_dynamodb()
 
 
 def _ensure_vpc_egress_connector() -> str | None:
@@ -232,7 +252,7 @@ def _ensure_running_microvm() -> tuple[str, str]:
             if state == "RUNNING" and matches_required_egress(detail) and matches_latest_image_version(detail.get("imageVersion")):
                 return str(cached_id), str(cached_endpoint)
         except ClientError:
-            pass
+            _invalidate_cached_token()
 
     paginator = _client.get_paginator("list_microvms")
     for page in paginator.paginate():
@@ -247,10 +267,7 @@ def _ensure_running_microvm() -> tuple[str, str]:
                     _client.terminate_microvm(microvmIdentifier=microvm_id)
                     continue
                 endpoint = detail["endpoint"]
-                _cache["microvm_id"] = microvm_id
-                _cache["microvm_endpoint"] = endpoint
-                _cache["microvm_expires_at"] = time.time() + MICROVM_MAX_DURATION_SECONDS
-                _persist_cache_to_dynamodb()
+                _set_active_microvm(str(microvm_id), str(endpoint))
                 return microvm_id, endpoint
 
     run_args: dict[str, Any] = {
@@ -282,10 +299,7 @@ def _ensure_running_microvm() -> tuple[str, str]:
         state = detail["state"]
         if state == "RUNNING":
             endpoint = detail["endpoint"]
-            _cache["microvm_id"] = microvm_id
-            _cache["microvm_endpoint"] = endpoint
-            _cache["microvm_expires_at"] = time.time() + MICROVM_MAX_DURATION_SECONDS
-            _persist_cache_to_dynamodb()
+            _set_active_microvm(str(microvm_id), str(endpoint))
             return microvm_id, endpoint
         if state in {"TERMINATED", "TERMINATING"}:
             raise RuntimeError(f"MicroVM terminated during startup: {detail.get('stateReason', 'unknown')}")
@@ -299,7 +313,8 @@ def _create_microvm_auth_token(microvm_id: str) -> str:
     now = time.time()
     cached_token = _cache.get("token")
     expires_at = float(_cache.get("token_expires_at") or 0)
-    if cached_token and now < (expires_at - TOKEN_REFRESH_MARGIN_SECONDS):
+    token_microvm_id = str(_cache.get("token_microvm_id") or "")
+    if cached_token and token_microvm_id == microvm_id and now < (expires_at - TOKEN_REFRESH_MARGIN_SECONDS):
         return str(cached_token)
 
     resp = _client.create_microvm_auth_token(
@@ -310,6 +325,7 @@ def _create_microvm_auth_token(microvm_id: str) -> str:
     token = resp["authToken"]["X-aws-proxy-auth"]
     _cache["token"] = token
     _cache["token_expires_at"] = now + (TOKEN_EXPIRATION_MINUTES * 60)
+    _cache["token_microvm_id"] = microvm_id
     _persist_cache_to_dynamodb()
     return str(token)
 
