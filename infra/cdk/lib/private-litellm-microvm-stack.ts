@@ -208,6 +208,11 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
+    const iamRouteCallerRole = new iam.Role(this, "IamRouteCallerRole", {
+      roleName: `${this.stackName}-iam-route-caller`,
+      assumedBy: new iam.AccountPrincipal(this.account),
+      description: "Role for clients using /iam/* route with AWS_IAM auth"
+    });
     litellmMasterKeySecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     apiGatewayKeySecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
@@ -404,6 +409,12 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     const iamMethodOptions: apigateway.MethodOptions = { authorizationType: apigateway.AuthorizationType.IAM };
     iamRoot.addMethod("ANY", proxyIntegration, iamMethodOptions);
     iamRoot.addResource("{proxy+}").addMethod("ANY", proxyIntegration, iamMethodOptions);
+    iamRouteCallerRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["execute-api:Invoke"],
+        resources: [api.arnForExecuteApi("*", "/iam/*", api.deploymentStage.stageName)]
+      })
+    );
 
     const usagePlan = api.addUsagePlan("PublicLiteLlmUsagePlan", {
       name: "litellm-public-usage-plan",
@@ -618,6 +629,129 @@ def handler(event, context):
       litellmReadyCheck.node.addDependency(microvmImage);
       litellmReadyCheck.node.addDependency(api.deploymentStage);
     }
+    const iamKeyMappingBootstrapFunction = new lambda.Function(this, "IamKeyMappingBootstrapFunction", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      timeout: cdk.Duration.minutes(2),
+      code: lambda.Code.fromInline(`
+import base64
+import hashlib
+import json
+import secrets
+import string
+
+import boto3
+
+lambda_client = boto3.client("lambda")
+secrets_client = boto3.client("secretsmanager")
+ddb = boto3.client("dynamodb")
+
+
+def _master_key_from_secret(secret_arn: str) -> str:
+    payload = secrets_client.get_secret_value(SecretId=secret_arn)["SecretString"]
+    obj = json.loads(payload)
+    prefix = str(obj.get("prefix") or "")
+    suffix = str(obj.get("suffix") or "")
+    if not prefix or not suffix:
+        raise RuntimeError("Master key secret JSON must contain prefix and suffix.")
+    return prefix + suffix
+
+
+def _generate_key() -> str:
+    chars = string.ascii_letters + string.digits
+    return "sk-" + "".join(secrets.choice(chars) for _ in range(45))
+
+
+def _invoke_key_generate(proxy_function_name: str, master_key: str, key_alias: str, key_value: str, duration: str):
+    event = {
+        "httpMethod": "POST",
+        "path": "/key/generate",
+        "headers": {
+            "Authorization": f"Bearer {master_key}",
+            "Content-Type": "application/json",
+        },
+        "queryStringParameters": None,
+        "body": json.dumps({
+            "key_alias": key_alias,
+            "duration": duration,
+            "models": [],
+            "key": key_value,
+            "metadata": {"owner": "cdk-custom-resource"},
+        }),
+        "isBase64Encoded": False,
+    }
+    invoke_resp = lambda_client.invoke(
+        FunctionName=proxy_function_name,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(event).encode("utf-8"),
+    )
+    payload = invoke_resp["Payload"].read().decode("utf-8") or "{}"
+    result = json.loads(payload)
+    status_code = int(result.get("statusCode") or 0)
+    body = str(result.get("body") or "")
+    if result.get("isBase64Encoded"):
+        body = base64.b64decode(body).decode("utf-8", errors="replace")
+    if status_code != 200:
+        raise RuntimeError(f"/key/generate failed: status={status_code} body={body}")
+    body_json = json.loads(body)
+    returned_key = body_json.get("key") or body_json.get("token")
+    if returned_key != key_value:
+        raise RuntimeError("LiteLLM returned a different key than requested.")
+
+
+def handler(event, context):
+    props = event.get("ResourceProperties") or {}
+    principal_arn = str(props.get("PrincipalArn") or "")
+    table_name = str(props.get("TableName") or "")
+    proxy_function_name = str(props.get("ProxyFunctionName") or "")
+    master_key_secret_arn = str(props.get("MasterKeySecretArn") or "")
+    key_alias = str(props.get("KeyAlias") or "")
+    duration = str(props.get("Duration") or "3650d")
+    if not principal_arn or not table_name or not proxy_function_name or not master_key_secret_arn or not key_alias:
+        raise RuntimeError("Missing required custom resource properties.")
+
+    physical_id = event.get("PhysicalResourceId") or f"iam-key-map-{hashlib.sha256(principal_arn.encode('utf-8')).hexdigest()[:16]}"
+    request_type = event.get("RequestType")
+    if request_type == "Delete":
+        ddb.delete_item(TableName=table_name, Key={"principal_arn": {"S": principal_arn}})
+        return {"PhysicalResourceId": physical_id}
+
+    if request_type == "Create":
+        master_key = _master_key_from_secret(master_key_secret_arn)
+        generated_key = _generate_key()
+        _invoke_key_generate(proxy_function_name, master_key, key_alias, generated_key, duration)
+        ddb.put_item(
+            TableName=table_name,
+            Item={
+                "principal_arn": {"S": principal_arn},
+                "litellm_key": {"S": generated_key},
+                "key_alias": {"S": key_alias},
+            },
+        )
+    return {"PhysicalResourceId": physical_id}
+      `)
+    });
+    iamPrincipalKeyMapTable.grantReadWriteData(iamKeyMappingBootstrapFunction);
+    litellmMasterKeySecret.grantRead(iamKeyMappingBootstrapFunction);
+    proxyFunction.grantInvoke(iamKeyMappingBootstrapFunction);
+    const iamKeyMappingBootstrapProvider = new cr.Provider(this, "IamKeyMappingBootstrapProvider", {
+      onEventHandler: iamKeyMappingBootstrapFunction
+    });
+    const iamKeyMappingBootstrap = new cdk.CustomResource(this, "IamKeyMappingBootstrap", {
+      serviceToken: iamKeyMappingBootstrapProvider.serviceToken,
+      properties: {
+        PrincipalArn: iamRouteCallerRole.roleArn,
+        TableName: iamPrincipalKeyMapTable.tableName,
+        ProxyFunctionName: proxyFunction.functionName,
+        MasterKeySecretArn: litellmMasterKeySecret.secretArn,
+        KeyAlias: "iam-route-default",
+        Duration: "3650d"
+      }
+    });
+    iamKeyMappingBootstrap.node.addDependency(proxyFunction);
+    iamKeyMappingBootstrap.node.addDependency(microvmImage);
+    iamKeyMappingBootstrap.node.addDependency(iamRouteCallerRole);
+    iamKeyMappingBootstrap.node.addDependency(iamPrincipalKeyMapTable);
 
     new cdk.CfnOutput(this, "MicrovmImageRef", {
       value: microvmImage.ref,
@@ -648,6 +782,7 @@ def handler(event, context):
     new cdk.CfnOutput(this, "NetworkConnectorOperatorRoleArn", { value: connectorOperatorRole.roleArn });
     new cdk.CfnOutput(this, "MicrovmProxyCacheTableName", { value: proxyCacheTable.tableName });
     new cdk.CfnOutput(this, "IamPrincipalKeyMapTableName", { value: iamPrincipalKeyMapTable.tableName });
+    new cdk.CfnOutput(this, "IamRouteCallerRoleArn", { value: iamRouteCallerRole.roleArn });
   }
 
   private createMicrovmImageSourceWithBaseImage(sourceDir: string, baseImage: string): string {

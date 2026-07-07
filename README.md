@@ -203,6 +203,10 @@ Every API request requires both:
 - **Existing path (`/...`)**: API Gateway API key (`x-api-key`) + LiteLLM bearer key in `Authorization` (unchanged workflow).
 - **IAM path (`/iam/...`)**: API Gateway `AWS_IAM` auth (SigV4). Proxy maps IAM principal ARN to LiteLLM key and injects bearer auth for LiteLLM.
 - On `/iam/...`, client-supplied `Authorization`/API-key headers are ignored for app auth; proxy enforces IAM principal mapping.
+- CDK also bootstraps one default IAM principal mapping on deploy:
+  - creates role output `IamRouteCallerRoleArn`
+  - custom resource generates a LiteLLM key alias `iam-route-default`
+  - custom resource writes mapping to `IamPrincipalKeyMapTableName`
 
 Relevant stack outputs:
 
