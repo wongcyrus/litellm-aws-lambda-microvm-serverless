@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import time
 import urllib.error
@@ -44,10 +45,19 @@ NETWORK_CONNECTOR_SECURITY_GROUP_IDS = [
 ]
 NETWORK_CONNECTOR_OPERATOR_ROLE_ARN = os.environ.get("NETWORK_CONNECTOR_OPERATOR_ROLE_ARN")
 PROXY_CACHE_TABLE_NAME = os.environ.get("PROXY_CACHE_TABLE_NAME")
+IAM_KEY_MAP_TABLE_NAME = os.environ.get("IAM_KEY_MAP_TABLE_NAME")
+IAM_ROUTE_PREFIX = os.environ.get("IAM_ROUTE_PREFIX", "/iam")
 MICROVM_MAX_DURATION_SECONDS = 28800
 MICROVM_CACHE_KEY = "microvm-proxy-state"
 
 _dynamodb = boto3.client("dynamodb", region_name=MICROVM_REGION) if PROXY_CACHE_TABLE_NAME else None
+
+if not IAM_ROUTE_PREFIX.startswith("/"):
+    IAM_ROUTE_PREFIX = "/" + IAM_ROUTE_PREFIX
+
+
+class UnauthorizedPrincipalError(Exception):
+    pass
 
 
 def _load_cache_from_dynamodb() -> None:
@@ -310,10 +320,44 @@ def _forward_to_microvm(event: dict) -> dict:
         forwarded_headers.pop(blocked_header, None)
         forwarded_headers.pop(blocked_header.title(), None)
 
+    def pop_header_case_insensitive(name: str) -> None:
+        for existing_key in [k for k in forwarded_headers.keys() if k.lower() == name.lower()]:
+            forwarded_headers.pop(existing_key, None)
+
+    is_iam_path = path == IAM_ROUTE_PREFIX or path.startswith(f"{IAM_ROUTE_PREFIX}/")
+    if is_iam_path:
+        if not _dynamodb or not IAM_KEY_MAP_TABLE_NAME:
+            raise UnauthorizedPrincipalError("IAM route mapping table is not configured.")
+        request_context = event.get("requestContext") or {}
+        identity = request_context.get("identity") or {}
+        principal_arn = str(identity.get("userArn") or "")
+        if not principal_arn:
+            raise UnauthorizedPrincipalError("Missing IAM principal ARN on request context.")
+
+        mapping = _dynamodb.get_item(
+            TableName=IAM_KEY_MAP_TABLE_NAME,
+            Key={"principal_arn": {"S": principal_arn}},
+            ConsistentRead=True,
+        ).get("Item")
+        litellm_key = str((mapping or {}).get("litellm_key", {}).get("S") or "")
+        if not litellm_key:
+            raise UnauthorizedPrincipalError(f"No LiteLLM key mapping found for IAM principal: {principal_arn}")
+
+        for key_header in [
+            "authorization",
+            "x-api-key",
+            "api-key",
+            "x-goog-api-key",
+            "ocp-apim-subscription-key",
+            "x-litellm-api-key",
+        ]:
+            pop_header_case_insensitive(key_header)
+        forwarded_headers["Authorization"] = f"Bearer {litellm_key}"
+
     # For key-management endpoints, authenticate to LiteLLM only via Authorization
     # (master key). Keep API Gateway key at the gateway layer and avoid passing it
     # through to app auth, which can conflict with master-key auth on /key/* routes.
-    if path == "/key/generate" or path.startswith("/key/"):
+    if not is_iam_path and (path == "/key/generate" or path.startswith("/key/")):
         for key_header in [
             "x-api-key",
             "api-key",
@@ -321,8 +365,7 @@ def _forward_to_microvm(event: dict) -> dict:
             "ocp-apim-subscription-key",
             "x-litellm-api-key",
         ]:
-            forwarded_headers.pop(key_header, None)
-            forwarded_headers.pop(key_header.title(), None)
+            pop_header_case_insensitive(key_header)
 
     forwarded_headers["X-aws-proxy-auth"] = _create_microvm_auth_token(microvm_id)
     forwarded_headers["X-aws-proxy-port"] = MICROVM_PORT
@@ -402,4 +445,12 @@ def _forward_to_microvm(event: dict) -> dict:
 
 
 def handler(event, context):
-    return _forward_to_microvm(event)
+    try:
+        return _forward_to_microvm(event)
+    except UnauthorizedPrincipalError as error:
+        return {
+            "statusCode": 403,
+            "isBase64Encoded": False,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"error": {"message": str(error), "type": "auth_error", "code": "forbidden"}}),
+        }

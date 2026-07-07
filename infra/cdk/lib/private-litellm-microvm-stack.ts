@@ -202,6 +202,12 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
+    const iamPrincipalKeyMapTable = new dynamodb.Table(this, "IamPrincipalKeyMapTable", {
+      partitionKey: { name: "principal_arn", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    });
     litellmMasterKeySecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     apiGatewayKeySecret.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
@@ -313,10 +319,13 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         NETWORK_CONNECTOR_SECURITY_GROUP_IDS: connectorSecurityGroup.securityGroupId,
         NETWORK_CONNECTOR_OPERATOR_ROLE_ARN: connectorOperatorRole.roleArn,
         MICROVM_EGRESS_CONNECTOR_ARN: runtimeEgressConnectorArn,
-        PROXY_CACHE_TABLE_NAME: proxyCacheTable.tableName
+        PROXY_CACHE_TABLE_NAME: proxyCacheTable.tableName,
+        IAM_KEY_MAP_TABLE_NAME: iamPrincipalKeyMapTable.tableName,
+        IAM_ROUTE_PREFIX: "/iam"
       }
     });
     proxyCacheTable.grantReadWriteData(proxyFunction);
+    iamPrincipalKeyMapTable.grantReadData(proxyFunction);
     proxyFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
@@ -391,6 +400,10 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     api.root.addMethod("ANY", proxyIntegration, methodOptions);
     const greedyProxy = api.root.addResource("{proxy+}");
     greedyProxy.addMethod("ANY", proxyIntegration, methodOptions);
+    const iamRoot = api.root.addResource("iam");
+    const iamMethodOptions: apigateway.MethodOptions = { authorizationType: apigateway.AuthorizationType.IAM };
+    iamRoot.addMethod("ANY", proxyIntegration, iamMethodOptions);
+    iamRoot.addResource("{proxy+}").addMethod("ANY", proxyIntegration, iamMethodOptions);
 
     const usagePlan = api.addUsagePlan("PublicLiteLlmUsagePlan", {
       name: "litellm-public-usage-plan",
@@ -634,6 +647,7 @@ def handler(event, context):
     new cdk.CfnOutput(this, "LiteLlmArm64MirrorCodeBuildProjectName", { value: litellmMirrorProjectName });
     new cdk.CfnOutput(this, "NetworkConnectorOperatorRoleArn", { value: connectorOperatorRole.roleArn });
     new cdk.CfnOutput(this, "MicrovmProxyCacheTableName", { value: proxyCacheTable.tableName });
+    new cdk.CfnOutput(this, "IamPrincipalKeyMapTableName", { value: iamPrincipalKeyMapTable.tableName });
   }
 
   private createMicrovmImageSourceWithBaseImage(sourceDir: string, baseImage: string): string {

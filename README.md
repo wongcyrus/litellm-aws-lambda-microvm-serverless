@@ -198,6 +198,12 @@ Every API request requires both:
 > **Important:** Creating a key only in LiteLLM is not enough in this AWS setup.  
 > The same key value must also exist as an API Gateway API key and be attached to a usage plan, otherwise API Gateway rejects the request before LiteLLM sees it.
 
+## Parallel auth paths (existing + IAM)
+
+- **Existing path (`/...`)**: API Gateway API key (`x-api-key`) + LiteLLM bearer key in `Authorization` (unchanged workflow).
+- **IAM path (`/iam/...`)**: API Gateway `AWS_IAM` auth (SigV4). Proxy maps IAM principal ARN to LiteLLM key and injects bearer auth for LiteLLM.
+- On `/iam/...`, client-supplied `Authorization`/API-key headers are ignored for app auth; proxy enforces IAM principal mapping.
+
 Relevant stack outputs:
 
 - `PublicApiInvokeUrl`
@@ -336,6 +342,42 @@ Run:
 cd infra/cdk
 npx cdk destroy PrivateLiteLlmMicrovmStack --force -c microvmRegion=us-east-1 -c publicMicrovm=true
 ```
+
+### `infra/cdk/scripts/create-iam-key-mapping.sh`
+
+Purpose:
+
+- Creates a LiteLLM key and maps it to a specific IAM principal ARN for `/iam/...` routes.
+- This is separate from API Gateway usage-plan key flow and does not modify existing public path workflow.
+
+Arguments:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--principal-arn` | yes | IAM role/user ARN to map |
+| `--alias` | yes | Unique LiteLLM key alias |
+| `--duration` | no | Key duration (`default: 24h`) |
+| `--models` | no | Comma-separated model allowlist |
+| `--key` | no | Explicit key value |
+| `--output-file` | no | Key output file (`default: .keys/iam-<alias>.txt`) |
+| `--stack` | no | Stack name override |
+| `--region` | no | Region override |
+
+Example:
+
+```bash
+cd infra/cdk
+./scripts/create-iam-key-mapping.sh \
+  --principal-arn arn:aws:iam::123456789012:role/my-service \
+  --alias svc-a \
+  --duration 7d
+```
+
+Expected result:
+
+- LiteLLM key is created via `/key/generate`
+- mapping is written to `IamPrincipalKeyMapTableName`
+- generated key is saved to local file
 
 ### `infra/cdk/scripts/test-api-key-strands.py`
 
@@ -478,12 +520,23 @@ cd infra/cdk
 ./scripts/test-api-key-strands.sh --api-key "$USER_KEY" --api-url "$PUBLIC_API_URL"
 ```
 
-### 6) Common errors
+### 6) IAM route usage (`/iam/...`)
+
+After creating IAM mapping with `create-iam-key-mapping.sh`, call IAM route with SigV4:
+
+Sign normal HTTPS requests with IAM credentials to:
+
+- `${PUBLIC_API_URL%/}/iam/chat/completions`
+
+The proxy resolves IAM principal ARN from request context and injects mapped LiteLLM bearer key.
+
+### 7) Common errors
 
 | Symptom | Typical cause | Action |
 |---|---|---|
 | `403 Forbidden` from API Gateway | missing/invalid `x-api-key` | confirm `AwsGatewayApiKeySecretArn` value and header |
 | `401` from LiteLLM endpoints | missing/invalid Authorization bearer header | use master key for admin endpoints or valid generated user key |
+| `403` on `/iam/...` with message about principal mapping | IAM principal has no mapped LiteLLM key | run `create-iam-key-mapping.sh --principal-arn ... --alias ...` |
 | `429` | usage-plan throttle/quota exceeded | use admin/public key on correct usage plan, then retry |
 | `500/502` on first requests | microVM startup/token lifecycle in progress | retry request; check proxy and microVM logs |
 
