@@ -1,30 +1,28 @@
 import * as path from "node:path";
-import * as fs from "node:fs";
-import * as os from "node:os";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
-import * as codebuild from "aws-cdk-lib/aws-codebuild";
-import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as rds from "aws-cdk-lib/aws-rds";
-import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as cr from "aws-cdk-lib/custom-resources";
+import { createMicrovmImageSourceDir } from "./microvm-image-source";
+import { createNetworkingResources } from "./stack/networking";
+import { createImageArtifactResources } from "./stack/image-artifacts";
+import { IAM_KEY_BOOTSTRAP_INLINE_CODE } from "./stack/iam-key-bootstrap-code";
 
 export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   microvmRegion: string;
-  vertexAiProject: string;
-  vertexAiLocation: string;
-  vertexCredentialsJson: string;
-  azureApiBase: string;
-  azureApiKey: string;
-  azureApiVersion: string;
+  vertexAiProject?: string;
+  vertexAiLocation?: string;
+  vertexCredentialsJson?: string;
+  azureApiBase?: string;
+  azureApiKey?: string;
+  azureApiVersion?: string;
   microvmArtifactKey?: string;
   microvmEgressConnectorArn?: string;
   microvmContainerBaseImage?: string;
@@ -36,134 +34,18 @@ export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
 export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: PrivateLiteLlmMicrovmStackProps) {
     super(scope, id, props);
+    const vertexProviderEnabled = Boolean(props.vertexAiProject && props.vertexAiLocation && props.vertexCredentialsJson);
+    const azureProviderEnabled = Boolean(props.azureApiBase && props.azureApiKey && props.azureApiVersion);
 
     const microvmImageName = `${this.stackName}-litellm-bedrock-private`;
     const resolvedMicrovmImageIdentifier = `arn:aws:lambda:${props.microvmRegion}:${this.account}:microvm-image:${microvmImageName}`;
 
-    const subnetConfiguration: ec2.SubnetConfiguration[] = props.publicMicrovm
-      ? [
-          { name: "AppPublic", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
-          { name: "DbPrivate", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }
-        ]
-      : [
-          { name: "AppPublic", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
-          { name: "AppPrivate", subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
-          { name: "DbPrivate", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }
-        ];
-
-    const appVpc = new ec2.Vpc(this, "AppVpc", {
-      natGateways: props.publicMicrovm ? 0 : 1,
-      maxAzs: 2,
-      subnetConfiguration
+    const { appVpc, microvmSubnets, connectorSecurityGroup, dbSecurityGroup } = createNetworkingResources(this, {
+      publicMicrovm: props.publicMicrovm,
+      region: this.region
     });
-
-    const microvmSubnetGroupName = props.publicMicrovm ? "AppPublic" : "AppPrivate";
-    const microvmSubnets = appVpc.selectSubnets({ subnetGroupName: microvmSubnetGroupName });
-
-    const connectorSecurityGroup = new ec2.SecurityGroup(this, "MicrovmConnectorSecurityGroup", {
-      vpc: appVpc,
-      description: "Security group to attach to Lambda MicroVM VPC egress connector",
-      allowAllOutbound: true
-    });
-
-    const artifactBucket = new s3.Bucket(this, "MicrovmArtifactsBucket", {
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      enforceSSL: true,
-      autoDeleteObjects: true,
-      removalPolicy: cdk.RemovalPolicy.DESTROY
-    });
-    const litellmBaseRepositoryName = "litellm-microvm-base";
-    const litellmBaseRepository = new ecr.Repository(this, "LiteLlmBaseRepository", {
-      repositoryName: litellmBaseRepositoryName,
-      imageScanOnPush: true,
-      emptyOnDelete: true,
-      removalPolicy: cdk.RemovalPolicy.DESTROY
-    });
-    const codebuildRole = new iam.Role(this, "LiteLlmMirrorCodeBuildRole", {
-      assumedBy: new iam.ServicePrincipal("codebuild.amazonaws.com")
-    });
-    codebuildRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-        resources: ["*"]
-      })
-    );
-    codebuildRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ["ecr:GetAuthorizationToken"],
-        resources: ["*"]
-      })
-    );
-    litellmBaseRepository.grantPullPush(codebuildRole);
-    const litellmMirrorProjectName = `${this.stackName}-litellm-arm64-mirror`;
-    new codebuild.CfnProject(this, "LiteLlmArm64MirrorProject", {
-      name: litellmMirrorProjectName,
-      serviceRole: codebuildRole.roleArn,
-      source: {
-        type: "NO_SOURCE",
-        buildSpec: [
-          "version: 0.2",
-          "phases:",
-          "  pre_build:",
-          "    commands:",
-          "      - aws --version",
-          "      - aws ecr get-login-password --region \"$AWS_DEFAULT_REGION\" | docker login --username AWS --password-stdin \"${TARGET_IMAGE_URI%/*}\"",
-          "  build:",
-          "    commands:",
-          "      - docker pull --platform linux/arm64 \"$SOURCE_IMAGE\"",
-          "      - docker tag \"$SOURCE_IMAGE\" \"$TARGET_IMAGE_URI\"",
-          "      - docker push \"$TARGET_IMAGE_URI\"",
-        ].join("\n")
-      },
-      artifacts: { type: "NO_ARTIFACTS" },
-      environment: {
-        type: "LINUX_CONTAINER",
-        image: "aws/codebuild/standard:7.0",
-        computeType: "BUILD_GENERAL1_MEDIUM",
-        privilegedMode: true,
-        environmentVariables: [
-          { name: "SOURCE_IMAGE", value: "ghcr.io/berriai/litellm-database:main-stable", type: "PLAINTEXT" },
-          { name: "TARGET_IMAGE_URI", value: `${litellmBaseRepository.repositoryUri}:main-stable`, type: "PLAINTEXT" },
-          { name: "AWS_DEFAULT_REGION", value: this.region, type: "PLAINTEXT" }
-        ]
-      }
-    });
-
-    const endpointSecurityGroup = new ec2.SecurityGroup(this, "VpcEndpointSecurityGroup", {
-      vpc: appVpc,
-      description: "Security group for private interface endpoints",
-      allowAllOutbound: true
-    });
-
-    endpointSecurityGroup.addIngressRule(
-      connectorSecurityGroup,
-      ec2.Port.tcp(443),
-      "Allow connector traffic to AWS private endpoints"
-    );
-
-    const interfaceServices = ["bedrock-runtime", "bedrock", "secretsmanager", "kms", "logs", "sts"];
-    for (const service of interfaceServices) {
-      new ec2.InterfaceVpcEndpoint(this, `${toPascalCase(service)}Endpoint`, {
-        vpc: appVpc,
-        service: new ec2.InterfaceVpcEndpointService(`com.amazonaws.${this.region}.${service}`, 443),
-        privateDnsEnabled: true,
-        securityGroups: [endpointSecurityGroup],
-        subnets: { subnetGroupName: microvmSubnetGroupName }
-      });
-    }
-
-    appVpc.addGatewayEndpoint("S3GatewayEndpoint", {
-      service: ec2.GatewayVpcEndpointAwsService.S3,
-      subnets: [{ subnetGroupName: microvmSubnetGroupName }]
-    });
-
-    const dbSecurityGroup = new ec2.SecurityGroup(this, "AuroraSecurityGroup", {
-      vpc: appVpc,
-      description: "Aurora ingress from MicroVM connector only",
-      allowAllOutbound: true
-    });
-    dbSecurityGroup.addIngressRule(connectorSecurityGroup, ec2.Port.tcp(5432), "Allow Aurora from connector");
+    const { artifactBucket, litellmBaseRepository, litellmBaseRepositoryName, litellmMirrorProjectName } =
+      createImageArtifactResources(this);
 
     const dbCluster = new rds.DatabaseCluster(this, "LiteLlmAuroraCluster", {
       engine: rds.DatabaseClusterEngine.auroraPostgres({
@@ -483,9 +365,11 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       }
       const selectedBaseImage = props.microvmContainerBaseImage ?? (props.useCodebuildEcrBaseImage ? mirroredBaseImage : undefined);
       const microvmImageSourceDir = path.join(__dirname, "..", "microvm-image");
-      const artifactPath = selectedBaseImage
-        ? this.createMicrovmImageSourceWithBaseImage(microvmImageSourceDir, selectedBaseImage)
-        : microvmImageSourceDir;
+      const artifactPath = createMicrovmImageSourceDir(microvmImageSourceDir, {
+        baseImage: selectedBaseImage,
+        enableAzure: azureProviderEnabled,
+        enableVertex: vertexProviderEnabled
+      });
       const defaultArtifact = new s3assets.Asset(this, "DefaultMicrovmImageArtifact", { path: artifactPath });
       artifactUri = defaultArtifact.s3ObjectUrl;
       defaultArtifact.grantRead(microvmBuildRole);
@@ -524,12 +408,12 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
               litellmMasterKeySecret.secretValueFromJson("suffix").toString()
             ])
           },
-          { Key: "VERTEXAI_PROJECT", Value: props.vertexAiProject },
-          { Key: "VERTEXAI_LOCATION", Value: props.vertexAiLocation },
-          { Key: "VERTEX_CREDENTIALS", Value: props.vertexCredentialsJson },
-          { Key: "AZURE_API_BASE", Value: props.azureApiBase },
-          { Key: "AZURE_API_KEY", Value: props.azureApiKey },
-          { Key: "AZURE_API_VERSION", Value: props.azureApiVersion },
+          { Key: "VERTEXAI_PROJECT", Value: props.vertexAiProject ?? "" },
+          { Key: "VERTEXAI_LOCATION", Value: props.vertexAiLocation ?? "" },
+          { Key: "VERTEX_CREDENTIALS", Value: props.vertexCredentialsJson ?? "" },
+          { Key: "AZURE_API_BASE", Value: props.azureApiBase ?? "" },
+          { Key: "AZURE_API_KEY", Value: props.azureApiKey ?? "" },
+          { Key: "AZURE_API_VERSION", Value: props.azureApiVersion ?? "" },
           { Key: "STORE_MODEL_IN_DB", Value: "False" },
           { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" }
         ],
@@ -572,160 +456,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       timeout: cdk.Duration.minutes(5),
-      code: lambda.Code.fromInline(`
-import base64
-import hashlib
-import json
-import secrets
-import string
-import time
-
-import boto3
-
-lambda_client = boto3.client("lambda")
-secrets_client = boto3.client("secretsmanager")
-ddb = boto3.client("dynamodb")
-
-
-def _master_key_from_secret(secret_arn: str) -> str:
-    payload = secrets_client.get_secret_value(SecretId=secret_arn)["SecretString"]
-    obj = json.loads(payload)
-    prefix = str(obj.get("prefix") or "")
-    suffix = str(obj.get("suffix") or "")
-    if not prefix or not suffix:
-        raise RuntimeError("Master key secret JSON must contain prefix and suffix.")
-    return prefix + suffix
-
-
-def _generate_key() -> str:
-    chars = string.ascii_letters + string.digits
-    return "sk-" + "".join(secrets.choice(chars) for _ in range(45))
-
-
-def _get_existing_mapping(table_name: str, principal_arn: str) -> dict | None:
-    item = ddb.get_item(
-        TableName=table_name,
-        Key={"principal_arn": {"S": principal_arn}},
-        ConsistentRead=True,
-    ).get("Item")
-    return item if item else None
-
-
-def _invoke_key_generate(proxy_function_name: str, master_key: str, key_alias: str, key_value: str, duration: str):
-    event = {
-        "httpMethod": "POST",
-        "path": "/key/generate",
-        "headers": {
-            "Authorization": f"Bearer {master_key}",
-            "Content-Type": "application/json",
-        },
-        "queryStringParameters": None,
-        "body": json.dumps({
-            "key_alias": key_alias,
-            "duration": duration,
-            "models": [],
-            "key": key_value,
-            "metadata": {"owner": "cdk-custom-resource"},
-        }),
-        "isBase64Encoded": False,
-    }
-    invoke_resp = lambda_client.invoke(
-        FunctionName=proxy_function_name,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(event).encode("utf-8"),
-    )
-    payload = invoke_resp["Payload"].read().decode("utf-8") or "{}"
-    result = json.loads(payload)
-    status_code = int(result.get("statusCode") or 0)
-    body = str(result.get("body") or "")
-    if result.get("isBase64Encoded"):
-        body = base64.b64decode(body).decode("utf-8", errors="replace")
-    if status_code != 200:
-        raise RuntimeError(f"/key/generate failed: status={status_code} body={body}")
-    body_json = json.loads(body)
-    returned_key = body_json.get("key") or body_json.get("token")
-    if returned_key != key_value:
-        raise RuntimeError("LiteLLM returned a different key than requested.")
-
-
-def _wait_until_litellm_ready(proxy_function_name: str, max_attempts: int = 60, delay_seconds: int = 2) -> None:
-    event = {
-        "httpMethod": "GET",
-        "path": "/health/liveliness",
-        "headers": {},
-        "queryStringParameters": None,
-        "body": None,
-        "isBase64Encoded": False,
-    }
-    last_status = 0
-    for _ in range(max_attempts):
-        invoke_resp = lambda_client.invoke(
-            FunctionName=proxy_function_name,
-            InvocationType="RequestResponse",
-            Payload=json.dumps(event).encode("utf-8"),
-        )
-        payload = invoke_resp["Payload"].read().decode("utf-8") or "{}"
-        result = json.loads(payload)
-        last_status = int(result.get("statusCode") or 0)
-        if last_status == 200:
-            return
-        time.sleep(delay_seconds)
-    raise RuntimeError(f"LiteLLM not ready for key bootstrap. lastStatus={last_status}")
-
-
-def handler(event, context):
-    props = event.get("ResourceProperties") or {}
-    old_props = event.get("OldResourceProperties") or {}
-    principal_arn = str(props.get("PrincipalArn") or "")
-    table_name = str(props.get("TableName") or "")
-    proxy_function_name = str(props.get("ProxyFunctionName") or "")
-    master_key_secret_arn = str(props.get("MasterKeySecretArn") or "")
-    key_alias = str(props.get("KeyAlias") or "")
-    duration = str(props.get("Duration") or "3650d")
-    if not principal_arn or not table_name or not proxy_function_name or not master_key_secret_arn or not key_alias:
-        raise RuntimeError("Missing required custom resource properties.")
-
-    physical_id = event.get("PhysicalResourceId") or f"iam-key-map-{hashlib.sha256(principal_arn.encode('utf-8')).hexdigest()[:16]}"
-    request_type = event.get("RequestType")
-    if request_type not in {"Create", "Update", "Delete"}:
-        raise RuntimeError(f"Unsupported request type: {request_type}")
-
-    old_principal_arn = str(old_props.get("PrincipalArn") or "")
-    old_table_name = str(old_props.get("TableName") or table_name)
-
-    if request_type == "Delete":
-        ddb.delete_item(TableName=table_name, Key={"principal_arn": {"S": principal_arn}})
-        if old_principal_arn and old_principal_arn != principal_arn:
-            ddb.delete_item(TableName=old_table_name, Key={"principal_arn": {"S": old_principal_arn}})
-        return {"PhysicalResourceId": physical_id}
-
-    if request_type == "Update" and old_principal_arn and old_principal_arn != principal_arn:
-        ddb.delete_item(TableName=old_table_name, Key={"principal_arn": {"S": old_principal_arn}})
-
-    existing = _get_existing_mapping(table_name, principal_arn)
-    existing_alias = ""
-    existing_key = ""
-    if existing:
-        existing_alias = str(existing.get("key_alias", {}).get("S") or "")
-        existing_key = str(existing.get("litellm_key", {}).get("S") or "")
-        if existing_alias == key_alias and existing_key:
-            return {"PhysicalResourceId": physical_id}
-
-    if request_type in {"Create", "Update"}:
-        _wait_until_litellm_ready(proxy_function_name)
-        master_key = _master_key_from_secret(master_key_secret_arn)
-        generated_key = _generate_key()
-        _invoke_key_generate(proxy_function_name, master_key, key_alias, generated_key, duration)
-        ddb.put_item(
-            TableName=table_name,
-            Item={
-                "principal_arn": {"S": principal_arn},
-                "litellm_key": {"S": generated_key},
-                "key_alias": {"S": key_alias},
-            },
-        )
-    return {"PhysicalResourceId": physical_id}
-      `)
+      code: lambda.Code.fromInline(IAM_KEY_BOOTSTRAP_INLINE_CODE)
     });
     iamPrincipalKeyMapTable.grantReadWriteData(iamKeyMappingBootstrapFunction);
     litellmMasterKeySecret.grantRead(iamKeyMappingBootstrapFunction);
@@ -780,23 +511,4 @@ def handler(event, context):
     new cdk.CfnOutput(this, "IamPrincipalKeyMapTableName", { value: iamPrincipalKeyMapTable.tableName });
     new cdk.CfnOutput(this, "IamRouteCallerRoleArn", { value: iamRouteCallerRole.roleArn });
   }
-
-  private createMicrovmImageSourceWithBaseImage(sourceDir: string, baseImage: string): string {
-    const dockerfilePath = path.join(sourceDir, "Dockerfile");
-    const configPath = path.join(sourceDir, "config.yaml");
-    const dockerfile = fs.readFileSync(dockerfilePath, "utf8");
-    const rewrittenDockerfile = dockerfile.replace(/^FROM\s+.+$/m, `FROM ${baseImage}`);
-    const generatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "litellm-microvm-image-"));
-    fs.writeFileSync(path.join(generatedDir, "Dockerfile"), rewrittenDockerfile, "utf8");
-    fs.copyFileSync(configPath, path.join(generatedDir, "config.yaml"));
-    return generatedDir;
-  }
-}
-
-function toPascalCase(value: string): string {
-  return value
-    .split(/[^a-zA-Z0-9]/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("");
 }

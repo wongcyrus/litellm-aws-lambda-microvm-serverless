@@ -11,15 +11,19 @@ OUTPUT_FILE=""
 PRINT_JSON=false
 CUSTOM_KEY=""
 USAGE_PLAN_ID=""
+MAX_BUDGET=""
+BUDGET_DURATION=""
+KEY_TYPE="llm_api"
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/create-api-key.sh --usage-plan-id <id> --alias <key-alias> [--duration <duration>] [--models <comma-separated-models>] [--key <explicit-key>] [--output-file <path>] [--json] [--stack <name>] [--region <aws-region>]
+  ./scripts/create-api-key.sh --usage-plan-id <id> --alias <key-alias> [--duration <duration>] [--models <comma-separated-models>] [--max-budget <usd>] [--budget-duration <duration>] [--key-type <llm_api|management|read_only|default>] [--key <explicit-key>] [--output-file <path>] [--json] [--stack <name>] [--region <aws-region>]
 
 Examples:
   ./scripts/create-api-key.sh --usage-plan-id abc123 --alias team-a --duration 7d --models nova-2-lite
   ./scripts/create-api-key.sh --usage-plan-id abc123 --alias admin-ui --duration 7d
+  ./scripts/create-api-key.sh --usage-plan-id abc123 --alias app-user --models nova-2-lite --max-budget 10 --budget-duration 1d --key-type llm_api
   ./scripts/create-api-key.sh --usage-plan-id abc123 --alias ci-key --duration 24h --output-file .keys/ci_key.txt
 
 Notes:
@@ -43,6 +47,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --usage-plan-id)
       USAGE_PLAN_ID="$2"
+      shift 2
+      ;;
+    --max-budget)
+      MAX_BUDGET="$2"
+      shift 2
+      ;;
+    --budget-duration)
+      BUDGET_DURATION="$2"
+      shift 2
+      ;;
+    --key-type)
+      KEY_TYPE="$2"
       shift 2
       ;;
     --key)
@@ -89,6 +105,25 @@ if [[ -z "$USAGE_PLAN_ID" ]]; then
   echo "Error: --usage-plan-id is required (no fallback)." >&2
   exit 1
 fi
+if [[ -n "$MAX_BUDGET" && -z "$BUDGET_DURATION" ]]; then
+  echo "Error: --budget-duration is required when --max-budget is set (example: 1d)." >&2
+  exit 1
+fi
+if [[ -n "$BUDGET_DURATION" && -z "$MAX_BUDGET" ]]; then
+  echo "Error: --max-budget is required when --budget-duration is set." >&2
+  exit 1
+fi
+if [[ -n "$MAX_BUDGET" ]] && ! [[ "$MAX_BUDGET" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "Error: --max-budget must be a non-negative number (USD)." >&2
+  exit 1
+fi
+case "$KEY_TYPE" in
+  llm_api|management|read_only|default) ;;
+  *)
+    echo "Error: --key-type must be one of: llm_api, management, read_only, default." >&2
+    exit 1
+    ;;
+esac
 if [[ -z "$OUTPUT_FILE" ]]; then
   OUTPUT_FILE=".keys/${KEY_ALIAS}.txt"
 fi
@@ -163,7 +198,33 @@ if [[ "${GENERATED_KEY:0:3}" != "sk-" ]]; then
   exit 1
 fi
 
-REQUEST_BODY="$(python -c 'import json,sys; print(json.dumps({"key_alias":sys.argv[1],"duration":sys.argv[2],"models":json.loads(sys.argv[3]),"key":sys.argv[4],"metadata":{"owner":"admin-script","stack":"'"$STACK_NAME"'"}}))' "$KEY_ALIAS" "$DURATION" "$MODELS_JSON" "$GENERATED_KEY")"
+REQUEST_BODY="$(python - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODELS_JSON" "$GENERATED_KEY" "$STACK_NAME" "$MAX_BUDGET" "$BUDGET_DURATION" "$KEY_TYPE"
+import json
+import sys
+
+key_alias = sys.argv[1]
+duration = sys.argv[2]
+models = json.loads(sys.argv[3])
+generated_key = sys.argv[4]
+stack_name = sys.argv[5]
+max_budget = sys.argv[6]
+budget_duration = sys.argv[7]
+key_type = sys.argv[8]
+
+payload = {
+    "key_alias": key_alias,
+    "duration": duration,
+    "models": models,
+    "key": generated_key,
+    "key_type": key_type,
+    "metadata": {"owner": "admin-script", "stack": stack_name},
+}
+if max_budget:
+    payload["max_budget"] = float(max_budget)
+    payload["budget_duration"] = budget_duration
+print(json.dumps(payload))
+PY
+)"
 RESPONSE="$(curl -sS -w '\n%{http_code}' -X POST "${PUBLIC_API_URL%/}/key/generate" \
   -H "x-api-key: $API_GATEWAY_KEY" \
   -H "Authorization: Bearer $MASTER_KEY" \

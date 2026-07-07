@@ -26,6 +26,12 @@ type AzureOpenAiConfig = {
   apiVersion: string;
 };
 
+type VertexConfig = {
+  project: string;
+  location: string;
+  credentialsJson: string;
+};
+
 function parseBoolean(value: unknown, fieldName: string): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -85,6 +91,37 @@ function loadAzureOpenAiConfig(filePathValue: string): AzureOpenAiConfig {
   };
 }
 
+function resolveVertexConfig(options: {
+  project?: string;
+  location?: string;
+  credentialsFile?: string;
+}): VertexConfig | undefined {
+  const { project, location, credentialsFile } = options;
+  const hasAny = Boolean(project || location || credentialsFile);
+  if (!hasAny) return undefined;
+  if (!project) {
+    throw new Error(
+      "vertexAiProject is required when enabling Vertex provider. Set it in cdk-settings.yaml or pass -c vertexAiProject=<gcp-project-id>."
+    );
+  }
+  if (!location) {
+    throw new Error(
+      "vertexAiLocation is required when enabling Vertex provider. Set it in cdk-settings.yaml or pass -c vertexAiLocation=<gcp-region>."
+    );
+  }
+  if (!credentialsFile) {
+    throw new Error(
+      "vertexCredentialsFile is required when enabling Vertex provider. Set vertexCredentialsFile in cdk-settings.yaml, " +
+        "pass -c vertexCredentialsFile=<path>, or set VERTEX_CREDENTIALS_FILE."
+    );
+  }
+  return {
+    project,
+    location,
+    credentialsJson: loadVertexCredentialsJson(credentialsFile)
+  };
+}
+
 const settingsFileContext = app.node.tryGetContext("settingsFile");
 const settingsFilePath = path.resolve(process.cwd(), String(settingsFileContext ?? "cdk-settings.yaml"));
 if (!fs.existsSync(settingsFilePath)) {
@@ -104,12 +141,16 @@ const vertexCredentialsFile =
   asOptionalString(app.node.tryGetContext("vertexCredentialsFile")) ??
   settings.vertexCredentialsFile ??
   asOptionalString(process.env.VERTEX_CREDENTIALS_FILE);
-const vertexCredentialsJson = vertexCredentialsFile ? loadVertexCredentialsJson(vertexCredentialsFile) : undefined;
 const azureOpenAiConfigFile =
   asOptionalString(app.node.tryGetContext("azureOpenAiConfigFile")) ??
   settings.azureOpenAiConfigFile ??
   asOptionalString(process.env.AZURE_OPENAI_CONFIG_FILE);
 const azureOpenAiConfig = azureOpenAiConfigFile ? loadAzureOpenAiConfig(azureOpenAiConfigFile) : undefined;
+const vertexConfig = resolveVertexConfig({
+  project: vertexAiProject,
+  location: vertexAiLocation,
+  credentialsFile: vertexCredentialsFile
+});
 const microvmArtifactKey = asOptionalString(app.node.tryGetContext("microvmArtifactKey")) ?? settings.microvmArtifactKey;
 const microvmEgressConnectorArn = asOptionalString(app.node.tryGetContext("microvmEgressConnectorArn")) ?? settings.microvmEgressConnectorArn;
 const microvmContainerBaseImage =
@@ -130,28 +171,6 @@ if (!microvmRegion) {
     "Missing microvmRegion. Set it in cdk-settings.yaml or pass -c microvmRegion=<aws-region>."
   );
 }
-if (!vertexAiProject) {
-  throw new Error(
-    "Missing vertexAiProject. Set it in cdk-settings.yaml or pass -c vertexAiProject=<gcp-project-id>."
-  );
-}
-if (!vertexAiLocation) {
-  throw new Error(
-    "Missing vertexAiLocation. Set it in cdk-settings.yaml or pass -c vertexAiLocation=<gcp-region>."
-  );
-}
-if (!vertexCredentialsJson) {
-  throw new Error(
-    "Missing vertexCredentialsFile. Set vertexCredentialsFile in cdk-settings.yaml, " +
-      "pass -c vertexCredentialsFile=<path>, or set VERTEX_CREDENTIALS_FILE."
-  );
-}
-if (!azureOpenAiConfig) {
-  throw new Error(
-    "Missing azureOpenAiConfigFile. Set azureOpenAiConfigFile in cdk-settings.yaml, " +
-      "pass -c azureOpenAiConfigFile=<path>, or set AZURE_OPENAI_CONFIG_FILE."
-  );
-}
 if (microvmEgressConnectorArn && String(microvmEgressConnectorArn) === internetEgressConnectorArn) {
   throw new Error(
     "microvmEgressConnectorArn=INTERNET_EGRESS is incompatible with Aurora access in single-phase mode. " +
@@ -166,12 +185,12 @@ new PrivateLiteLlmMicrovmStack(app, "PrivateLiteLlmMicrovmStack", {
     region: String(microvmRegion)
   },
   microvmRegion: String(microvmRegion),
-  vertexAiProject: String(vertexAiProject),
-  vertexAiLocation: String(vertexAiLocation),
-  vertexCredentialsJson: String(vertexCredentialsJson),
-  azureApiBase: azureOpenAiConfig.apiBase,
-  azureApiKey: azureOpenAiConfig.apiKey,
-  azureApiVersion: azureOpenAiConfig.apiVersion,
+  vertexAiProject: vertexConfig?.project,
+  vertexAiLocation: vertexConfig?.location,
+  vertexCredentialsJson: vertexConfig?.credentialsJson,
+  azureApiBase: azureOpenAiConfig?.apiBase,
+  azureApiKey: azureOpenAiConfig?.apiKey,
+  azureApiVersion: azureOpenAiConfig?.apiVersion,
   microvmArtifactKey: microvmArtifactKey ? String(microvmArtifactKey) : undefined,
   microvmEgressConnectorArn: microvmEgressConnectorArn ? String(microvmEgressConnectorArn) : undefined,
   microvmContainerBaseImage: microvmContainerBaseImage ? String(microvmContainerBaseImage) : undefined,
