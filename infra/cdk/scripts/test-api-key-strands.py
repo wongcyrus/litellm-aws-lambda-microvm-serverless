@@ -23,7 +23,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", help="Key value (sk-...)")
     parser.add_argument("--api-key-file", help="Path to file containing key")
     parser.add_argument("--model", default="nova-2-lite", help="Model id (default: nova-2-lite)")
-    parser.add_argument("--prompt", default="Reply with exactly: ok", help="Prompt text")
+    parser.add_argument(
+        "--prompt",
+        default="Write 3 concise sentences about using LiteLLM with Amazon Bedrock in production, and include one practical reliability tip.",
+        help="Prompt text",
+    )
     parser.add_argument("--max-tokens", type=int, default=128, help="Max output tokens")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
     args = parser.parse_args()

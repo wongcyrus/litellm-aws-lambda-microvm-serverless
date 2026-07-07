@@ -60,6 +60,25 @@ class UnauthorizedPrincipalError(Exception):
     pass
 
 
+def _assumed_role_arn_to_role_arn(principal_arn: str) -> str | None:
+    parts = principal_arn.split(":", 5)
+    if len(parts) != 6:
+        return None
+    arn_prefix, partition, service, _, account_id, resource = parts
+    if arn_prefix != "arn" or service != "sts":
+        return None
+    if not resource.startswith("assumed-role/"):
+        return None
+
+    resource_parts = resource.split("/")
+    if len(resource_parts) < 3:
+        return None
+    role_name = "/".join(resource_parts[1:-1]).strip()
+    if not role_name:
+        return None
+    return f"arn:{partition}:iam::{account_id}:role/{role_name}"
+
+
 def _load_cache_from_dynamodb() -> None:
     if _cache.get("dynamodb_loaded"):
         return
@@ -298,10 +317,20 @@ def _create_microvm_auth_token(microvm_id: str) -> str:
 def _forward_to_microvm(event: dict) -> dict:
     microvm_id, microvm_endpoint = _ensure_running_microvm()
     method = event.get("httpMethod", "GET")
-    path = event.get("path", "/")
+    request_path = str(event.get("path", "/") or "/")
+    if not request_path.startswith("/"):
+        request_path = "/" + request_path
+    is_iam_path = request_path == IAM_ROUTE_PREFIX or request_path.startswith(f"{IAM_ROUTE_PREFIX}/")
+    upstream_path = request_path
+    if is_iam_path:
+        stripped = request_path[len(IAM_ROUTE_PREFIX) :]
+        upstream_path = stripped if stripped.startswith("/") else f"/{stripped}"
+        if not upstream_path:
+            upstream_path = "/"
+
     query = event.get("queryStringParameters") or {}
     query_string = urllib.parse.urlencode(query, doseq=True)
-    url = f"https://{microvm_endpoint}{path}"
+    url = f"https://{microvm_endpoint}{upstream_path}"
     if query_string:
         url = f"{url}?{query_string}"
 
@@ -324,7 +353,6 @@ def _forward_to_microvm(event: dict) -> dict:
         for existing_key in [k for k in forwarded_headers.keys() if k.lower() == name.lower()]:
             forwarded_headers.pop(existing_key, None)
 
-    is_iam_path = path == IAM_ROUTE_PREFIX or path.startswith(f"{IAM_ROUTE_PREFIX}/")
     if is_iam_path:
         if not _dynamodb or not IAM_KEY_MAP_TABLE_NAME:
             raise UnauthorizedPrincipalError("IAM route mapping table is not configured.")
@@ -334,11 +362,21 @@ def _forward_to_microvm(event: dict) -> dict:
         if not principal_arn:
             raise UnauthorizedPrincipalError("Missing IAM principal ARN on request context.")
 
-        mapping = _dynamodb.get_item(
-            TableName=IAM_KEY_MAP_TABLE_NAME,
-            Key={"principal_arn": {"S": principal_arn}},
-            ConsistentRead=True,
-        ).get("Item")
+        principal_candidates = [principal_arn]
+        normalized_role_arn = _assumed_role_arn_to_role_arn(principal_arn)
+        if normalized_role_arn and normalized_role_arn not in principal_candidates:
+            principal_candidates.append(normalized_role_arn)
+
+        mapping = None
+        for candidate in principal_candidates:
+            mapping = _dynamodb.get_item(
+                TableName=IAM_KEY_MAP_TABLE_NAME,
+                Key={"principal_arn": {"S": candidate}},
+                ConsistentRead=True,
+            ).get("Item")
+            if mapping:
+                break
+
         litellm_key = str((mapping or {}).get("litellm_key", {}).get("S") or "")
         if not litellm_key:
             raise UnauthorizedPrincipalError(f"No LiteLLM key mapping found for IAM principal: {principal_arn}")
@@ -357,7 +395,7 @@ def _forward_to_microvm(event: dict) -> dict:
     # For key-management endpoints, authenticate to LiteLLM only via Authorization
     # (master key). Keep API Gateway key at the gateway layer and avoid passing it
     # through to app auth, which can conflict with master-key auth on /key/* routes.
-    if not is_iam_path and (path == "/key/generate" or path.startswith("/key/")):
+    if not is_iam_path and (request_path == "/key/generate" or request_path.startswith("/key/")):
         for key_header in [
             "x-api-key",
             "api-key",

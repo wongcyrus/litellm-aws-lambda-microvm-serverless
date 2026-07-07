@@ -6,5 +6,7 @@ infra/cdk/node_modules/
 infra/cdk/dist/
 infra/cdk/cdk.out/
 infra/cdk/cdk.context.json
+infra/cdk/output.json
+output.json
 __pycache__/
 .venv-strands/

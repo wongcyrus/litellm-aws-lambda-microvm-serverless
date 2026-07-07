@@ -165,6 +165,22 @@ sequenceDiagram
 
 ## Deploy
 
+Deploy and save stack outputs to `output.json`:
+
+```bash
+cd infra/cdk
+./scripts/deploy-stack.sh
+```
+
+Private mode (NAT enabled) with custom output file:
+
+```bash
+cd infra/cdk
+./scripts/deploy-stack.sh --public-microvm false --output-file output.json
+```
+
+Direct CDK commands (equivalent):
+
 ```bash
 cd infra/cdk
 npm install
@@ -198,6 +214,36 @@ Every API request requires both:
 > **Important:** Creating a key only in LiteLLM is not enough in this AWS setup.  
 > The same key value must also exist as an API Gateway API key and be attached to a usage plan, otherwise API Gateway rejects the request before LiteLLM sees it.
 
+### OpenClaw settings (exact fields)
+
+Use the existing path (`/...`) with OpenAI-compatible provider:
+
+1. Open OpenClaw **Settings** -> **Models** -> **Providers**.
+2. Add or edit provider id `litellm`.
+3. Set `baseUrl` to `https://<api-id>.execute-api.<region>.amazonaws.com/prod/`.
+4. Set `api` to `openai-completions`.
+5. Set `apiKey` to your generated user key (`sk-...`).
+6. Add custom header `x-api-key` with the same `sk-...` value.
+7. Select model id `nova-2-lite` (or another mapped model id from this stack).
+
+Provider example:
+
+```json
+{
+  "litellm": {
+    "baseUrl": "https://<api-id>.execute-api.<region>.amazonaws.com/prod/",
+    "apiKey": "sk-<user-key>",
+    "api": "openai-completions",
+    "headers": {
+      "x-api-key": "sk-<user-key>"
+    },
+    "models": [
+      { "id": "nova-2-lite", "name": "nova-2-lite" }
+    ]
+  }
+}
+```
+
 ## Parallel auth paths (existing + IAM)
 
 - **Existing path (`/...`)**: API Gateway API key (`x-api-key`) + LiteLLM bearer key in `Authorization` (unchanged workflow).
@@ -224,6 +270,30 @@ MASTER_JSON=$(aws secretsmanager get-secret-value --secret-id <LiteLlmMasterKeyS
 ```
 
 ## Script reference (detailed)
+
+### `infra/cdk/scripts/deploy-stack.sh`
+
+Purpose:
+
+- Deploys `PrivateLiteLlmMicrovmStack`.
+- Writes CDK stack outputs to JSON file (default `infra/cdk/output.json`).
+
+Arguments:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--public-microvm` | no | `true` or `false` (`default: true`) |
+| `--output-file` | no | Output JSON path relative to `infra/cdk` (`default: output.json`) |
+| `--stack` | no | CloudFormation stack name override |
+| `--region` | no | AWS region override |
+
+Examples:
+
+```bash
+cd infra/cdk
+./scripts/deploy-stack.sh
+./scripts/deploy-stack.sh --public-microvm false --output-file output.json
+```
 
 ### `infra/cdk/scripts/create-api-key.sh`
 
@@ -382,6 +452,39 @@ Expected result:
 - LiteLLM key is created via `/key/generate`
 - mapping is written to `IamPrincipalKeyMapTableName`
 - generated key is saved to local file
+- when mapping a role ARN, STS assumed-role sessions for that role are accepted on `/iam/...`
+
+### `infra/cdk/scripts/call-iam-endpoint.sh`
+
+Purpose:
+
+- Assumes the IAM role from stack outputs (`IamRouteCallerRoleArn`).
+- Sends a SigV4-signed request to `/iam/...` routes on `PublicApiInvokeUrl`.
+- Validates IAM path behavior without using API key headers.
+
+Arguments:
+
+| Flag | Required | Description |
+|---|---|---|
+| `--outputs-file` | no | CDK outputs JSON file (`default: output.json`) |
+| `--stack` | no | Stack key inside outputs JSON (`default: PrivateLiteLlmMicrovmStack`) |
+| `--role-arn` | no | Override role ARN (skip outputs lookup for role) |
+| `--api-url` | no | Override API URL (skip outputs lookup for URL) |
+| `--region` | no | AWS region (`default: us-east-1` unless env override) |
+| `--path` | no | IAM path to call (`default: /iam/health/liveliness`) |
+| `--method` | no | HTTP method (`default: GET`) |
+| `--body` | no | Inline JSON body |
+| `--body-file` | no | JSON body from file |
+| `--session-duration-seconds` | no | STS session duration (`900-43200`, default `900`) |
+
+Examples:
+
+```bash
+cd infra/cdk
+./scripts/call-iam-endpoint.sh
+./scripts/call-iam-endpoint.sh --path /iam/models
+./scripts/call-iam-endpoint.sh --method POST --path /iam/chat/completions --body '{"model":"nova-2-lite","messages":[{"role":"user","content":"say hi"}]}'
+```
 
 ### `infra/cdk/scripts/test-api-key-strands.py`
 
@@ -439,6 +542,53 @@ Run with explicit endpoint + key:
 ./scripts/test-api-key-strands.sh \
   --api-url "https://<id>.execute-api.us-east-1.amazonaws.com/prod/" \
   --api-key "sk-..."
+```
+
+### `infra/cdk/scripts/test-iam-strands.py`
+
+Purpose:
+
+- Tests IAM `/iam/...` path end-to-end using **Strands Agents**.
+- Assumes IAM role, signs requests with SigV4 (`execute-api`), and calls OpenAI-compatible `/iam/chat/completions`.
+- Does not use `x-api-key` or LiteLLM bearer key from client side.
+
+Run:
+
+```bash
+cd infra/cdk
+python scripts/test-iam-strands.py \
+  --api-url "$PUBLIC_API_URL" \
+  --role-arn "$IAM_ROLE_ARN" \
+  --region us-east-1 \
+  --model nova-2-lite
+```
+
+Expected result:
+
+- exits `0` and prints JSON with `"status": "ok"` and model response text.
+
+### `infra/cdk/scripts/test-iam-strands.sh` (wrapper)
+
+Purpose:
+
+- Wrapper for IAM Strands test that creates/reuses local virtualenv and installs deps.
+- Resolves `PublicApiInvokeUrl` and `IamRouteCallerRoleArn` from `output.json` by default.
+- Runs SigV4 IAM call path test with one command.
+
+Run with defaults:
+
+```bash
+cd infra/cdk
+./scripts/test-iam-strands.sh
+```
+
+Run with explicit role/API:
+
+```bash
+./scripts/test-iam-strands.sh \
+  --role-arn arn:aws:iam::<account-id>:role/PrivateLiteLlmMicrovmStack-iam-route-caller \
+  --api-url "https://<id>.execute-api.us-east-1.amazonaws.com/prod/" \
+  --region us-east-1
 ```
 
 ## API user guide (end-to-end)

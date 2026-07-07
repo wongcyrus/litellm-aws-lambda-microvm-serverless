@@ -10,7 +10,7 @@ API_URL="${API_URL:-}"
 API_KEY="${API_KEY:-}"
 API_KEY_FILE="${API_KEY_FILE:-$CDK_DIR/.keys/user-key.txt}"
 MODEL="${MODEL:-nova-2-lite}"
-PROMPT="${PROMPT:-Reply with exactly: ok}"
+PROMPT="${PROMPT:-Write 3 concise sentences about using LiteLLM with Amazon Bedrock in production, and include one practical reliability tip.}"
 MAX_TOKENS="${MAX_TOKENS:-128}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
 
