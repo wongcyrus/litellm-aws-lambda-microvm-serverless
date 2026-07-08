@@ -12,16 +12,15 @@ export function createNetworkingResources(
   scope: cdk.Stack,
   options: { publicMicrovm: boolean; region: string }
 ): NetworkingResources {
-  const subnetConfiguration: ec2.SubnetConfiguration[] = options.publicMicrovm
-    ? [
-        { name: "AppPublic", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
-        { name: "DbPrivate", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }
-      ]
-    : [
-        { name: "AppPublic", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
-        { name: "AppPrivate", subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
-        { name: "DbPrivate", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }
-      ];
+  const subnetConfiguration: ec2.SubnetConfiguration[] = [
+    { name: "AppPublic", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
+    {
+      name: "AppPrivate",
+      subnetType: options.publicMicrovm ? ec2.SubnetType.PRIVATE_ISOLATED : ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      cidrMask: 24
+    },
+    { name: "DbPrivate", subnetType: ec2.SubnetType.PRIVATE_ISOLATED, cidrMask: 24 }
+  ];
 
   const appVpc = new ec2.Vpc(scope, "AppVpc", {
     natGateways: options.publicMicrovm ? 0 : 1,

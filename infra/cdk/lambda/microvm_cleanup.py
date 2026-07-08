@@ -34,14 +34,46 @@ def _terminate_stack_microvms(microvm_identifier: str):
                     raise
 
 
+def _wait_for_no_running_microvms(microvm_identifier: str, attempts: int = 60, delay_seconds: int = 3):
+    for _ in range(attempts):
+        still_running = False
+        paginator = _microvms.get_paginator("list_microvms")
+        for page in paginator.paginate():
+            for item in page.get("items", []):
+                image_arn = str(item.get("imageArn") or "")
+                if not _matches_image(image_arn, microvm_identifier):
+                    continue
+                if str(item.get("state") or "") not in {"TERMINATED", "TERMINATING"}:
+                    still_running = True
+                    break
+            if still_running:
+                break
+        if not still_running:
+            return
+        import time
+
+        time.sleep(delay_seconds)
+    raise RuntimeError(f"Timed out waiting for MicroVM termination for image {microvm_identifier}.")
+
+
 def handler(event, context):
     props = event.get("ResourceProperties") or {}
+    old_props = event.get("OldResourceProperties") or {}
     microvm_identifier = str(props.get("MicrovmImageIdentifier") or "")
+    public_microvm = str(props.get("PublicMicrovm") or "")
     if not microvm_identifier:
         raise RuntimeError("MicrovmImageIdentifier is required for cleanup custom resource.")
 
-    if event.get("RequestType") == "Delete":
+    request_type = event.get("RequestType")
+    if request_type == "Delete":
         _terminate_stack_microvms(microvm_identifier)
+        _wait_for_no_running_microvms(microvm_identifier)
+    elif request_type == "Update":
+        if public_microvm != str(old_props.get("PublicMicrovm") or ""):
+            _terminate_stack_microvms(microvm_identifier)
+            _wait_for_no_running_microvms(microvm_identifier)
+    elif request_type != "Create":
+        raise RuntimeError(f"Unsupported request type: {request_type}")
 
     physical_id = str(event.get("PhysicalResourceId") or "litellm-microvm-cleanup")
     return {"PhysicalResourceId": physical_id[:256]}

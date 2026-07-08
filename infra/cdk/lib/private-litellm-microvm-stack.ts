@@ -448,10 +448,11 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     const microvmCleanup = new cdk.CustomResource(this, "MicrovmCleanupOnDelete", {
       serviceToken: microvmCleanupProvider.serviceToken,
       properties: {
-        MicrovmImageIdentifier: resolvedMicrovmImageIdentifier
+        MicrovmImageIdentifier: resolvedMicrovmImageIdentifier,
+        PublicMicrovm: String(props.publicMicrovm)
       }
     });
-    microvmCleanup.node.addDependency(microvmImage);
+    appVpc.node.addDependency(microvmCleanup);
     const iamKeyMappingBootstrapFunction = new lambda.Function(this, "IamKeyMappingBootstrapFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",

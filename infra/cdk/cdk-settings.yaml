@@ -1,0 +1,7 @@
+microvmRegion: us-east-1
+vertexAiProject: notebook-ml-475807
+vertexAiLocation: us-central1
+vertexCredentialsFile: /home/developer/Documents/data-disk/litellm-aws-lambda-microvm-serverless/infra/cdk/.keys/vertex-notebook-ml-475807-litellm-vertex-gemini.json
+azureOpenAiConfigFile: /home/developer/Documents/data-disk/litellm-aws-lambda-microvm-serverless/infra/cdk/.keys/azure-openai.json
+publicMicrovm: true
+useCodebuildEcrBaseImage: false
