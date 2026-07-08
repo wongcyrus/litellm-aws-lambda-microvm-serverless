@@ -1,8 +1,16 @@
 # LiteLLM AWS Lambda MicroVM Serverless
 
-<img src="./logo.png" alt="Logo" width="280" />
+<p align="center">
+  <img src="./logo.png" alt="LiteLLM AWS Lambda MicroVM Serverless" width="120" />
+</p>
 
-AWS deployment of LiteLLM on Lambda MicroVM with Aurora Serverless v2, API Gateway, and CDK.
+Run LiteLLM on AWS with Lambda MicroVMs, Aurora Serverless v2, API Gateway, and CDK.
+
+This stack is built for teams that want a private, serverless LLM gateway with:
+- LiteLLM as the model router and auth layer
+- Lambda MicroVMs for model execution
+- Aurora Serverless v2 for persistence
+- API Gateway for public access control and usage plans
 
 ## Documentation
 
