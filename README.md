@@ -19,6 +19,16 @@ This stack is built for teams that want a private, serverless LLM gateway with:
 - [Authentication and Keys](docs/auth-and-keys.md) (includes IAM -> LiteLLM key flow diagram)
 - [Testing Guide](docs/testing.md)
 - [API Usage Guide](docs/api-usage.md)
+- [Troubleshooting Guide](docs/troubleshooting.md)
+- [Documentation Map](docs/documentation-map.md)
+
+## Tables
+
+- Mode comparison table (security/cost): `docs/cdk-design.md` -> **Mode comparison table (security + cost)**
+- Deploy script flags table: `docs/deployment.md` -> **scripts/deploy-stack.sh**
+- API key script flags table: `docs/deployment.md` -> **scripts/create-api-key.sh**
+- Common failures table: `docs/api-usage.md` -> **Common failures**
+- Troubleshooting matrix: `docs/troubleshooting.md` -> **Common failure patterns**
 
 ## Quick Start
 
