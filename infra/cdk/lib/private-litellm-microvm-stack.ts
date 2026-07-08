@@ -201,7 +201,6 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda")),
       timeout: cdk.Duration.seconds(29),
       memorySize: 256,
-      reservedConcurrentExecutions: 50,
       logGroup: proxyLogGroup,
       environment: {
         MICROVM_REGION: props.microvmRegion,
