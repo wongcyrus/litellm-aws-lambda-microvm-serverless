@@ -1,5 +1,4 @@
 {
   "apiBase": "https://YOUR_AZURE_OPENAI_RESOURCE.openai.azure.com",
-  "apiKey": "YOUR_AZURE_OPENAI_API_KEY",
-  "apiVersion": "2024-08-01-preview"
+  "apiKey": "YOUR_AZURE_OPENAI_API_KEY"
 }

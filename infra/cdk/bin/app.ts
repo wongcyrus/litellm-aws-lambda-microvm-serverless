@@ -23,7 +23,6 @@ type CdkSettings = {
 type AzureOpenAiConfig = {
   apiBase: string;
   apiKey: string;
-  apiVersion: string;
 };
 
 type VertexConfig = {
@@ -86,8 +85,7 @@ function loadAzureOpenAiConfig(filePathValue: string): AzureOpenAiConfig {
   const parsed = loadJsonObjectFromFile(filePathValue, "Azure OpenAI config");
   return {
     apiBase: requireStringField(parsed, "apiBase", "Azure OpenAI config file"),
-    apiKey: requireStringField(parsed, "apiKey", "Azure OpenAI config file"),
-    apiVersion: requireStringField(parsed, "apiVersion", "Azure OpenAI config file")
+    apiKey: requireStringField(parsed, "apiKey", "Azure OpenAI config file")
   };
 }
 
@@ -190,7 +188,6 @@ new PrivateLiteLlmMicrovmStack(app, "PrivateLiteLlmMicrovmStack", {
   vertexCredentialsJson: vertexConfig?.credentialsJson,
   azureApiBase: azureOpenAiConfig?.apiBase,
   azureApiKey: azureOpenAiConfig?.apiKey,
-  azureApiVersion: azureOpenAiConfig?.apiVersion,
   microvmArtifactKey: microvmArtifactKey ? String(microvmArtifactKey) : undefined,
   microvmEgressConnectorArn: microvmEgressConnectorArn ? String(microvmEgressConnectorArn) : undefined,
   microvmContainerBaseImage: microvmContainerBaseImage ? String(microvmContainerBaseImage) : undefined,

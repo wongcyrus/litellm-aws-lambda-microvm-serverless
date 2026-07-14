@@ -23,6 +23,17 @@ export VERTEX_CREDENTIALS_FILE=/absolute/path/to/vertex-sa.json
 export AZURE_OPENAI_CONFIG_FILE=/absolute/path/to/azure-openai.json
 ```
 
+Azure OpenAI config file (`azure-openai.json`) now only needs:
+
+```json
+{
+  "apiBase": "https://YOUR_AZURE_OPENAI_RESOURCE.openai.azure.com",
+  "apiKey": "YOUR_AZURE_OPENAI_API_KEY"
+}
+```
+
+`api_version` is set in `infra/cdk/microvm-image/config.yaml` per-model and no longer needs to be provided via environment/config JSON.
+
 ## Deploy
 
 ```bash

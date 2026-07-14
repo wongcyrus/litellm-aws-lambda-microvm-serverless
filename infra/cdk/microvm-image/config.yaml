@@ -14,37 +14,75 @@ model_list:
       model: bedrock/moonshotai.kimi-k2.5
       aws_region_name: "us-east-1"      
 
-  # Azure OpenAI Configuration
+  # Azure OpenAI Configuration (gpt-5.2, gpt-5.4*, gpt-5.6*)
   - model_name: gpt-5.2
+    model_info:
+      base_model: gpt-5.2
     litellm_params:
       model: azure/gpt-5.2
-      api_base: os.environ/AZURE_API_BASE
-      api_key: os.environ/AZURE_API_KEY
-      api_version: os.environ/AZURE_API_VERSION
+      api_base: "os.environ/AZURE_API_BASE"
+      api_key: "os.environ/AZURE_API_KEY"
+      api_version: "2024-08-01-preview"
       drop_params: true
 
   - model_name: gpt-5.4-mini
+    model_info:
+      base_model: gpt-5.4-mini
     litellm_params:
       model: azure/gpt-5.4-mini
-      api_base: os.environ/AZURE_API_BASE
-      api_key: os.environ/AZURE_API_KEY
-      api_version: os.environ/AZURE_API_VERSION
-      drop_params: true
+      api_base: "os.environ/AZURE_API_BASE"
+      api_key: "os.environ/AZURE_API_KEY"
+      api_version: "2024-08-01-preview"
+      drop_params: true      
 
   - model_name: gpt-5.4-nano
+    model_info:
+      base_model: gpt-5.4-nano
     litellm_params:
       model: azure/gpt-5.4-nano
-      api_base: os.environ/AZURE_API_BASE
-      api_key: os.environ/AZURE_API_KEY
-      api_version: os.environ/AZURE_API_VERSION
-      drop_params: true
+      api_base: "os.environ/AZURE_API_BASE"
+      api_key: "os.environ/AZURE_API_KEY"
+      api_version: "2024-08-01-preview"
+      drop_params: true      
 
   - model_name: gpt-5.4
+    model_info:
+      base_model: gpt-5.4
     litellm_params:
       model: azure/gpt-5.4
-      api_base: os.environ/AZURE_API_BASE
-      api_key: os.environ/AZURE_API_KEY
-      api_version: os.environ/AZURE_API_VERSION
+      api_base: "os.environ/AZURE_API_BASE"
+      api_key: "os.environ/AZURE_API_KEY"
+      api_version: "2024-08-01-preview"
+      drop_params: true     
+
+  - model_name: gpt-5.6-terra
+    model_info:
+      base_model: gpt-5.6
+    litellm_params:
+      model: azure/gpt-5.6-terra
+      api_base: "os.environ/AZURE_API_BASE"
+      api_key: "os.environ/AZURE_API_KEY"
+      api_version: "2024-08-01-preview"
+      drop_params: true
+
+  - model_name: gpt-5.6-luna
+    model_info:
+      base_model: gpt-5.6
+    litellm_params:
+      model: azure/gpt-5.6-luna
+      api_base: "os.environ/AZURE_API_BASE"
+      api_key: "os.environ/AZURE_API_KEY"
+      api_version: "2024-08-01-preview"
+      drop_params: true
+
+  - model_name: gpt-5.6-sol
+    model_info:
+      base_model: gpt-5.6
+    litellm_params:
+      model: azure/gpt-5.6-sol
+      api_base: "os.environ/AZURE_API_BASE"
+      api_key: "os.environ/AZURE_API_KEY"
+      api_version: "2024-08-01-preview"
       drop_params: true
 
   # Gemini (current Vertex text/chat models)

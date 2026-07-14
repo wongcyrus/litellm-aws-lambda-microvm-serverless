@@ -22,7 +22,6 @@ export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   vertexCredentialsJson?: string;
   azureApiBase?: string;
   azureApiKey?: string;
-  azureApiVersion?: string;
   microvmArtifactKey?: string;
   microvmEgressConnectorArn?: string;
   microvmContainerBaseImage?: string;
@@ -35,7 +34,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: PrivateLiteLlmMicrovmStackProps) {
     super(scope, id, props);
     const vertexProviderEnabled = Boolean(props.vertexAiProject && props.vertexAiLocation && props.vertexCredentialsJson);
-    const azureProviderEnabled = Boolean(props.azureApiBase && props.azureApiKey && props.azureApiVersion);
+    const azureProviderEnabled = Boolean(props.azureApiBase && props.azureApiKey);
 
     const microvmImageName = `${this.stackName}-litellm-bedrock-private`;
     const resolvedMicrovmImageIdentifier = `arn:aws:lambda:${props.microvmRegion}:${this.account}:microvm-image:${microvmImageName}`;
@@ -412,7 +411,6 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
           { Key: "VERTEX_CREDENTIALS", Value: props.vertexCredentialsJson ?? "" },
           { Key: "AZURE_API_BASE", Value: props.azureApiBase ?? "" },
           { Key: "AZURE_API_KEY", Value: props.azureApiKey ?? "" },
-          { Key: "AZURE_API_VERSION", Value: props.azureApiVersion ?? "" },
           { Key: "STORE_MODEL_IN_DB", Value: "False" },
           { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" }
         ],
