@@ -20,6 +20,9 @@ Usage:
 Examples:
   ./scripts/create-iam-key-mapping.sh --principal-arn arn:aws:iam::123456789012:role/my-service --alias svc-a
   ./scripts/create-iam-key-mapping.sh --principal-arn arn:aws:iam::123456789012:user/dev-user --alias dev-a --models nova-2-lite
+
+Notes:
+  Omit --models to allow this key to call all models.
 EOF
 }
 
@@ -136,11 +139,6 @@ if [[ -z "$API_GATEWAY_KEY" || -z "$MASTER_KEY" ]]; then
   exit 1
 fi
 
-MODELS_JSON="[]"
-if [[ -n "$MODEL_LIST" ]]; then
-  MODELS_JSON="$(python -c 'import json,sys; print(json.dumps([m.strip() for m in sys.argv[1].split(",") if m.strip()]))' "$MODEL_LIST")"
-fi
-
 if [[ -n "$CUSTOM_KEY" ]]; then
   GENERATED_KEY="$CUSTOM_KEY"
 else
@@ -156,20 +154,19 @@ if [[ "${GENERATED_KEY:0:3}" != "sk-" ]]; then
   exit 1
 fi
 
-REQUEST_BODY="$(python - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODELS_JSON" "$GENERATED_KEY" "$STACK_NAME" "$PRINCIPAL_ARN"
+REQUEST_BODY="$(python - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODEL_LIST" "$GENERATED_KEY" "$STACK_NAME" "$PRINCIPAL_ARN"
 import json
 import sys
 
 key_alias = sys.argv[1]
 duration = sys.argv[2]
-models = json.loads(sys.argv[3])
+model_list = sys.argv[3]
 generated_key = sys.argv[4]
 stack_name = sys.argv[5]
 principal_arn = sys.argv[6]
 
 payload = {
     "key_alias": key_alias,
-    "models": models,
     "key": generated_key,
     "metadata": {
         "owner": "iam-mapping-script",
@@ -177,6 +174,11 @@ payload = {
         "principal_arn": principal_arn,
     },
 }
+if model_list:
+    models = [m.strip() for m in model_list.split(",") if m.strip()]
+    if not models:
+        raise SystemExit("Error: --models was provided but no valid model names were found.")
+    payload["models"] = models
 if duration:
     payload["duration"] = duration
 print(json.dumps(payload))

@@ -83,7 +83,7 @@ Generates one LiteLLM key and registers the same value in API Gateway usage plan
 | `--usage-plan-id` | yes | API Gateway usage plan id to attach key |
 | `--alias` | yes | Key alias in LiteLLM |
 | `--duration` | no | Key duration (omit for non-expiring key) |
-| `--models` | no | Comma-separated model allowlist |
+| `--models` | no | Comma-separated model allowlist (omit to allow all models) |
 | `--max-budget` | no | USD budget limit |
 | `--budget-duration` | no | Budget window (`1d`, `7d`, etc.) |
 | `--key-type` | no | `llm_api`, `management`, `read_only`, `default` |
@@ -134,7 +134,7 @@ Creates a LiteLLM key and stores IAM principal ARN mapping for `/iam/...` routes
 | `--principal-arn` | yes | IAM principal ARN to map |
 | `--alias` | yes | Key alias |
 | `--duration` | no | Key duration (omit for non-expiring key) |
-| `--models` | no | Comma-separated model allowlist |
+| `--models` | no | Comma-separated model allowlist (omit to allow all models) |
 | `--key` | no | Explicit key value |
 | `--output-file` | no | Output key file path |
 | `--stack` | no | Stack name override |

@@ -28,6 +28,7 @@ Examples:
 
 Notes:
   By default, the key is saved to .keys/<key-alias>.txt (chmod 600).
+  Omit --models to allow this key to call all models.
 EOF
 }
 
@@ -174,11 +175,6 @@ if [[ -z "$API_GATEWAY_KEY" || -z "$MASTER_KEY" ]]; then
   exit 1
 fi
 
-MODELS_JSON="[]"
-if [[ -n "$MODEL_LIST" ]]; then
-  MODELS_JSON="$(python -c 'import json,sys; print(json.dumps([m.strip() for m in sys.argv[1].split(",") if m.strip()]))' "$MODEL_LIST")"
-fi
-
 if [[ -n "$CUSTOM_KEY" ]]; then
   GENERATED_KEY="$CUSTOM_KEY"
 else
@@ -194,13 +190,13 @@ if [[ "${GENERATED_KEY:0:3}" != "sk-" ]]; then
   exit 1
 fi
 
-REQUEST_BODY="$(python - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODELS_JSON" "$GENERATED_KEY" "$STACK_NAME" "$MAX_BUDGET" "$BUDGET_DURATION" "$KEY_TYPE"
+REQUEST_BODY="$(python - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODEL_LIST" "$GENERATED_KEY" "$STACK_NAME" "$MAX_BUDGET" "$BUDGET_DURATION" "$KEY_TYPE"
 import json
 import sys
 
 key_alias = sys.argv[1]
 duration = sys.argv[2]
-models = json.loads(sys.argv[3])
+model_list = sys.argv[3]
 generated_key = sys.argv[4]
 stack_name = sys.argv[5]
 max_budget = sys.argv[6]
@@ -209,11 +205,15 @@ key_type = sys.argv[8]
 
 payload = {
     "key_alias": key_alias,
-    "models": models,
     "key": generated_key,
     "key_type": key_type,
     "metadata": {"owner": "admin-script", "stack": stack_name},
 }
+if model_list:
+    models = [m.strip() for m in model_list.split(",") if m.strip()]
+    if not models:
+        raise SystemExit("Error: --models was provided but no valid model names were found.")
+    payload["models"] = models
 if duration:
     payload["duration"] = duration
 if max_budget:

@@ -61,11 +61,12 @@ PUBLIC_PLAN_ID=$(aws cloudformation describe-stacks \
 ./scripts/create-api-key.sh \
   --usage-plan-id "$PUBLIC_PLAN_ID" \
   --alias app-user \
-  --duration 7d \
-  --models nova-2-lite
+  --duration 7d
 
 USER_KEY=$(cat .keys/app-user.txt)
 ```
+
+Omit `--models` to create a key that can call all models. Add `--models ...` only when you want an explicit allowlist.
 
 Manual `/key/generate` call (if needed):
 

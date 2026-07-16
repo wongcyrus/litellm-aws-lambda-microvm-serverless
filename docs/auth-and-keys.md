@@ -94,6 +94,8 @@ Notes:
 
 - This path is independent from public-route usage-plan keys.
 - `LITELLM_MASTER_KEY` is only used for admin key generation/bootstrap, not client inference.
+- CDK bootstrap mapping `iam-route-default` uses key type `llm_api` (AI APIs).
+- CDK bootstrap mapping `iam-route-default` is non-expiring by default.
 
 ## OpenClaw settings (exact fields)
 

@@ -471,7 +471,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         ProxyFunctionName: proxyFunction.functionName,
         MasterKeySecretArn: litellmMasterKeySecret.secretArn,
         KeyAlias: "iam-route-default",
-        Duration: "3650d"
+        KeyType: "llm_api"
       }
     });
     iamKeyMappingBootstrap.node.addDependency(proxyFunction);

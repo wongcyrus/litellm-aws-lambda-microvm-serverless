@@ -37,7 +37,22 @@ def _get_existing_mapping(table_name: str, principal_arn: str) -> dict | None:
     return item if item else None
 
 
-def _invoke_key_generate(proxy_function_name: str, master_key: str, key_alias: str, key_value: str, duration: str):
+def _invoke_key_generate(
+    proxy_function_name: str,
+    master_key: str,
+    key_alias: str,
+    key_value: str,
+    duration: str,
+    key_type: str,
+):
+    body = {
+        "key_alias": key_alias,
+        "key": key_value,
+        "key_type": key_type,
+        "metadata": {"owner": "cdk-custom-resource"},
+    }
+    if duration:
+        body["duration"] = duration
     event = {
         "httpMethod": "POST",
         "path": "/key/generate",
@@ -46,13 +61,7 @@ def _invoke_key_generate(proxy_function_name: str, master_key: str, key_alias: s
             "Content-Type": "application/json",
         },
         "queryStringParameters": None,
-        "body": json.dumps({
-            "key_alias": key_alias,
-            "duration": duration,
-            "models": [],
-            "key": key_value,
-            "metadata": {"owner": "cdk-custom-resource"},
-        }),
+        "body": json.dumps(body),
         "isBase64Encoded": False,
     }
     invoke_resp = lambda_client.invoke(
@@ -107,7 +116,8 @@ def handler(event, context):
     proxy_function_name = str(props.get("ProxyFunctionName") or "")
     master_key_secret_arn = str(props.get("MasterKeySecretArn") or "")
     key_alias = str(props.get("KeyAlias") or "")
-    duration = str(props.get("Duration") or "3650d")
+    duration = str(props.get("Duration") or "")
+    key_type = str(props.get("KeyType") or "llm_api")
     if not principal_arn or not table_name or not proxy_function_name or not master_key_secret_arn or not key_alias:
         raise RuntimeError("Missing required custom resource properties.")
 
@@ -131,23 +141,26 @@ def handler(event, context):
     existing = _get_existing_mapping(table_name, principal_arn)
     existing_alias = ""
     existing_key = ""
+    existing_key_type = ""
     if existing:
         existing_alias = str(existing.get("key_alias", {}).get("S") or "")
         existing_key = str(existing.get("litellm_key", {}).get("S") or "")
-        if existing_alias == key_alias and existing_key:
+        existing_key_type = str(existing.get("key_type", {}).get("S") or "")
+        if existing_alias == key_alias and existing_key and existing_key_type == key_type:
             return {"PhysicalResourceId": physical_id}
 
     if request_type in {"Create", "Update"}:
         _wait_until_litellm_ready(proxy_function_name)
         master_key = _master_key_from_secret(master_key_secret_arn)
         generated_key = _generate_key()
-        _invoke_key_generate(proxy_function_name, master_key, key_alias, generated_key, duration)
+        _invoke_key_generate(proxy_function_name, master_key, key_alias, generated_key, duration, key_type)
         ddb.put_item(
             TableName=table_name,
             Item={
                 "principal_arn": {"S": principal_arn},
                 "litellm_key": {"S": generated_key},
                 "key_alias": {"S": key_alias},
+                "key_type": {"S": key_type},
             },
         )
     return {"PhysicalResourceId": physical_id}
