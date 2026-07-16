@@ -82,7 +82,7 @@ Generates one LiteLLM key and registers the same value in API Gateway usage plan
 |---|---|---|
 | `--usage-plan-id` | yes | API Gateway usage plan id to attach key |
 | `--alias` | yes | Key alias in LiteLLM |
-| `--duration` | no | Key duration (`default: 24h`) |
+| `--duration` | no | Key duration (omit for non-expiring key) |
 | `--models` | no | Comma-separated model allowlist |
 | `--max-budget` | no | USD budget limit |
 | `--budget-duration` | no | Budget window (`1d`, `7d`, etc.) |
@@ -133,12 +133,31 @@ Creates a LiteLLM key and stores IAM principal ARN mapping for `/iam/...` routes
 |---|---|---|
 | `--principal-arn` | yes | IAM principal ARN to map |
 | `--alias` | yes | Key alias |
-| `--duration` | no | Key duration (`default: 24h`) |
+| `--duration` | no | Key duration (omit for non-expiring key) |
 | `--models` | no | Comma-separated model allowlist |
 | `--key` | no | Explicit key value |
 | `--output-file` | no | Output key file path |
 | `--stack` | no | Stack name override |
 | `--region` | no | Region override |
+
+### `scripts/delete-api-key.sh`
+
+Deletes a key across both auth layers in this order:
+
+1. LiteLLM `/key/delete` (revoke model access first)
+2. API Gateway API key deletion (same key value)
+3. IAM principal mapping cleanup for the same key (optional skip)
+
+| Flag | Required | Description |
+|---|---|---|
+| `--key` | yes* | Key value (`sk-...`) |
+| `--key-file` | yes* | File containing key value |
+| `--skip-iam-mapping-delete` | no | Skip deleting rows in `IamPrincipalKeyMapTable` |
+| `--json` | no | Print JSON result |
+| `--stack` | no | Stack name override |
+| `--region` | no | Region override |
+
+\* Provide exactly one of `--key` or `--key-file`.
 
 ### `scripts/call-iam-endpoint.sh`
 

@@ -6,7 +6,7 @@ AWS_REGION="${AWS_REGION:-${MICROVM_REGION:-${CDK_DEFAULT_REGION:-us-east-1}}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRINCIPAL_ARN=""
 KEY_ALIAS=""
-DURATION="24h"
+DURATION=""
 MODEL_LIST=""
 OUTPUT_FILE=""
 CUSTOM_KEY=""
@@ -18,7 +18,7 @@ Usage:
   ./scripts/create-iam-key-mapping.sh --principal-arn <iam-principal-arn> --alias <key-alias> [--duration <duration>] [--models <comma-separated-models>] [--key <explicit-key>] [--output-file <path>] [--json] [--stack <name>] [--region <aws-region>]
 
 Examples:
-  ./scripts/create-iam-key-mapping.sh --principal-arn arn:aws:iam::123456789012:role/my-service --alias svc-a --duration 7d
+  ./scripts/create-iam-key-mapping.sh --principal-arn arn:aws:iam::123456789012:role/my-service --alias svc-a
   ./scripts/create-iam-key-mapping.sh --principal-arn arn:aws:iam::123456789012:user/dev-user --alias dev-a --models nova-2-lite
 EOF
 }
@@ -79,10 +79,6 @@ if [[ -z "$PRINCIPAL_ARN" ]]; then
 fi
 if [[ -z "$KEY_ALIAS" ]]; then
   echo "Error: --alias is required and must be unique in LiteLLM." >&2
-  exit 1
-fi
-if [[ -z "$DURATION" ]]; then
-  echo "Error: --duration must be non-empty." >&2
   exit 1
 fi
 if [[ -z "$OUTPUT_FILE" ]]; then
@@ -160,7 +156,32 @@ if [[ "${GENERATED_KEY:0:3}" != "sk-" ]]; then
   exit 1
 fi
 
-REQUEST_BODY="$(python -c 'import json,sys; print(json.dumps({"key_alias":sys.argv[1],"duration":sys.argv[2],"models":json.loads(sys.argv[3]),"key":sys.argv[4],"metadata":{"owner":"iam-mapping-script","stack":"'"$STACK_NAME"'","principal_arn":"'"$PRINCIPAL_ARN"'"}}))' "$KEY_ALIAS" "$DURATION" "$MODELS_JSON" "$GENERATED_KEY")"
+REQUEST_BODY="$(python - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODELS_JSON" "$GENERATED_KEY" "$STACK_NAME" "$PRINCIPAL_ARN"
+import json
+import sys
+
+key_alias = sys.argv[1]
+duration = sys.argv[2]
+models = json.loads(sys.argv[3])
+generated_key = sys.argv[4]
+stack_name = sys.argv[5]
+principal_arn = sys.argv[6]
+
+payload = {
+    "key_alias": key_alias,
+    "models": models,
+    "key": generated_key,
+    "metadata": {
+        "owner": "iam-mapping-script",
+        "stack": stack_name,
+        "principal_arn": principal_arn,
+    },
+}
+if duration:
+    payload["duration"] = duration
+print(json.dumps(payload))
+PY
+)"
 RESPONSE="$(curl -sS -w '\n%{http_code}' -X POST "${PUBLIC_API_URL%/}/key/generate" \
   -H "x-api-key: $API_GATEWAY_KEY" \
   -H "Authorization: Bearer $MASTER_KEY" \

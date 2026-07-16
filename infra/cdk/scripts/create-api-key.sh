@@ -5,7 +5,7 @@ STACK_NAME="${STACK_NAME:-PrivateLiteLlmMicrovmStack}"
 AWS_REGION="${AWS_REGION:-${MICROVM_REGION:-${CDK_DEFAULT_REGION:-us-east-1}}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KEY_ALIAS=""
-DURATION="24h"
+DURATION=""
 MODEL_LIST=""
 OUTPUT_FILE=""
 PRINT_JSON=false
@@ -24,7 +24,7 @@ Examples:
   ./scripts/create-api-key.sh --usage-plan-id abc123 --alias team-a --duration 7d --models nova-2-lite
   ./scripts/create-api-key.sh --usage-plan-id abc123 --alias admin-ui --duration 7d
   ./scripts/create-api-key.sh --usage-plan-id abc123 --alias app-user --models nova-2-lite --max-budget 10 --budget-duration 1d --key-type llm_api
-  ./scripts/create-api-key.sh --usage-plan-id abc123 --alias ci-key --duration 24h --output-file .keys/ci_key.txt
+  ./scripts/create-api-key.sh --usage-plan-id abc123 --alias ci-key --output-file .keys/ci_key.txt
 
 Notes:
   By default, the key is saved to .keys/<key-alias>.txt (chmod 600).
@@ -95,10 +95,6 @@ done
 
 if [[ -z "$KEY_ALIAS" ]]; then
   echo "Error: --alias is required and must be unique in LiteLLM." >&2
-  exit 1
-fi
-if [[ -z "$DURATION" ]]; then
-  echo "Error: --duration must be non-empty." >&2
   exit 1
 fi
 if [[ -z "$USAGE_PLAN_ID" ]]; then
@@ -213,12 +209,13 @@ key_type = sys.argv[8]
 
 payload = {
     "key_alias": key_alias,
-    "duration": duration,
     "models": models,
     "key": generated_key,
     "key_type": key_type,
     "metadata": {"owner": "admin-script", "stack": stack_name},
 }
+if duration:
+    payload["duration"] = duration
 if max_budget:
     payload["max_budget"] = float(max_budget)
     payload["budget_duration"] = budget_duration

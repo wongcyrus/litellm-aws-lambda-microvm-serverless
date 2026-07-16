@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -52,6 +53,8 @@ MICROVM_MAX_DURATION_SECONDS = 28800
 MICROVM_CACHE_KEY = "microvm-proxy-state"
 
 _dynamodb = boto3.client("dynamodb", region_name=MICROVM_REGION) if PROXY_CACHE_TABLE_NAME else None
+_logger = logging.getLogger(__name__)
+_logger.setLevel(logging.INFO)
 
 if not IAM_ROUTE_PREFIX.startswith("/"):
     IAM_ROUTE_PREFIX = "/" + IAM_ROUTE_PREFIX
@@ -161,6 +164,7 @@ def _set_active_microvm(microvm_id: str, endpoint: str) -> None:
     _cache["microvm_endpoint"] = endpoint
     _cache["microvm_expires_at"] = time.time() + MICROVM_MAX_DURATION_SECONDS
     _persist_cache_to_dynamodb()
+    _logger.info("proxy.microvm.active id=%s endpoint=%s", microvm_id, endpoint)
 
 
 def _ensure_vpc_egress_connector() -> str | None:
@@ -250,6 +254,7 @@ def _ensure_running_microvm() -> tuple[str, str]:
             detail = _client.get_microvm(microvmIdentifier=str(cached_id))
             state = detail["state"]
             if state == "RUNNING" and matches_required_egress(detail) and matches_latest_image_version(detail.get("imageVersion")):
+                _logger.info("proxy.microvm.reuse cached_id=%s", cached_id)
                 return str(cached_id), str(cached_endpoint)
         except ClientError:
             _invalidate_cached_token()
@@ -268,6 +273,7 @@ def _ensure_running_microvm() -> tuple[str, str]:
                     continue
                 endpoint = detail["endpoint"]
                 _set_active_microvm(str(microvm_id), str(endpoint))
+                _logger.info("proxy.microvm.reuse listed_id=%s", microvm_id)
                 return microvm_id, endpoint
 
     run_args: dict[str, Any] = {
@@ -290,6 +296,13 @@ def _ensure_running_microvm() -> tuple[str, str]:
         raise RuntimeError("Resolved VPC egress connector does not match MICROVM_EGRESS_CONNECTOR_ARN")
     if egress_connector_arn:
         run_args["egressNetworkConnectors"] = [egress_connector_arn]
+    _logger.info(
+        "proxy.microvm.start image=%s imageVersion=%s ingress=%s egress=%s",
+        run_args.get("imageIdentifier"),
+        run_args.get("imageVersion"),
+        run_args.get("ingressNetworkConnectors"),
+        run_args.get("egressNetworkConnectors"),
+    )
 
     run_resp = _client.run_microvm(**run_args)
     microvm_id = run_resp["microvmId"]
@@ -300,6 +313,7 @@ def _ensure_running_microvm() -> tuple[str, str]:
         if state == "RUNNING":
             endpoint = detail["endpoint"]
             _set_active_microvm(str(microvm_id), str(endpoint))
+            _logger.info("proxy.microvm.started id=%s", microvm_id)
             return microvm_id, endpoint
         if state in {"TERMINATED", "TERMINATING"}:
             raise RuntimeError(f"MicroVM terminated during startup: {detail.get('stateReason', 'unknown')}")
@@ -352,6 +366,19 @@ def _forward_to_microvm(event: dict) -> dict:
 
     raw_headers = event.get("headers") or {}
     forwarded_headers = {str(k): str(v) for k, v in raw_headers.items() if v is not None}
+    request_context = event.get("requestContext") or {}
+    request_id = str(request_context.get("requestId") or "")
+    has_x_api_key = any(str(k).lower() == "x-api-key" for k in raw_headers.keys())
+    has_auth = any(str(k).lower() == "authorization" for k in raw_headers.keys())
+    _logger.info(
+        "proxy.request.start requestId=%s method=%s path=%s isIam=%s hasXApiKey=%s hasAuthorization=%s",
+        request_id,
+        method,
+        request_path,
+        is_iam_path,
+        has_x_api_key,
+        has_auth,
+    )
     for blocked_header in [
         "host",
         "connection",
@@ -461,6 +488,13 @@ def _forward_to_microvm(event: dict) -> dict:
 
             for header_name in ["content-length", "Content-Length", "transfer-encoding", "Transfer-Encoding"]:
                 response_headers.pop(header_name, None)
+            _logger.info(
+                "proxy.request.ok requestId=%s status=%s contentType=%s bytes=%s",
+                request_id,
+                response.status,
+                content_type,
+                len(response_bytes),
+            )
 
             return {
                 "statusCode": response.status,
@@ -489,6 +523,13 @@ def _forward_to_microvm(event: dict) -> dict:
 
         for header_name in ["content-length", "Content-Length", "transfer-encoding", "Transfer-Encoding"]:
             error_headers.pop(header_name, None)
+        _logger.warning(
+            "proxy.request.http_error requestId=%s status=%s contentType=%s bytes=%s",
+            request_id,
+            error.code,
+            error_content_type,
+            len(error_body),
+        )
 
         return {
             "statusCode": error.code,
@@ -496,12 +537,16 @@ def _forward_to_microvm(event: dict) -> dict:
             "headers": error_headers,
             "body": response_body,
         }
+    except Exception:
+        _logger.exception("proxy.request.exception requestId=%s path=%s", request_id, request_path)
+        raise
 
 
 def handler(event, context):
     try:
         return _forward_to_microvm(event)
     except UnauthorizedPrincipalError as error:
+        _logger.warning("proxy.request.unauthorized reason=%s", str(error))
         return {
             "statusCode": 403,
             "isBase64Encoded": False,

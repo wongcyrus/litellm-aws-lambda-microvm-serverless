@@ -74,7 +74,7 @@ curl -sS -X POST "${PUBLIC_API_URL%/}/key/generate" \
   -H "x-api-key: $API_GATEWAY_KEY" \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
-  --data-raw '{"key_alias":"manual-user","duration":"24h"}'
+  --data-raw '{"key_alias":"manual-user"}'
 ```
 
 ## 4) Chat completion
