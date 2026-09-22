@@ -66,6 +66,7 @@ Wrapper behavior in `test-iam-strands.sh`:
 - `nova-2-lite`
 - `minimax-m2.5`
 - `kimi-k2.5`
+- `kimi-k3`
 
 ### `test-gcp-strands.sh`
 

@@ -50,10 +50,47 @@ function asOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function loadJsonObjectFromFile(filePathValue: string, label: string): Record<string, unknown> {
-  const resolvedPath = path.isAbsolute(filePathValue) ? filePathValue : path.resolve(process.cwd(), filePathValue);
+function asOverridableString(contextValue: unknown, settingsValue: unknown, envValue?: string): string | undefined {
+  if (contextValue !== undefined && contextValue !== null) {
+    const str = String(contextValue).trim();
+    if (str.length === 0 || str.toLowerCase() === "none" || str.toLowerCase() === "false") {
+      return undefined;
+    }
+    return str;
+  }
+  if (settingsValue !== undefined && settingsValue !== null) {
+    const str = String(settingsValue).trim();
+    if (str.length > 0 && str.toLowerCase() !== "none" && str.toLowerCase() !== "false") {
+      return str;
+    }
+    return undefined;
+  }
+  if (envValue) {
+    const str = envValue.trim();
+    if (str.length > 0 && str.toLowerCase() !== "none" && str.toLowerCase() !== "false") {
+      return str;
+    }
+  }
+  return undefined;
+}
+
+function resolveFilePath(filePathValue: string, basePath?: string): string {
+  return path.isAbsolute(filePathValue) ? filePathValue : path.resolve(basePath ?? process.cwd(), filePathValue);
+}
+
+function loadJsonObjectFromFile(
+  filePathValue: string,
+  label: string,
+  basePath?: string,
+  required = true
+): Record<string, unknown> | undefined {
+  const resolvedPath = resolveFilePath(filePathValue, basePath);
   if (!fs.existsSync(resolvedPath)) {
-    throw new Error(`${label} file not found: ${resolvedPath}`);
+    if (required) {
+      throw new Error(`${label} file not found: ${resolvedPath}`);
+    }
+    console.warn(`[WARN] ${label} file not found: ${resolvedPath}. Provider will be disabled.`);
+    return undefined;
   }
   const raw = fs.readFileSync(resolvedPath, "utf8");
   let parsed: unknown;
@@ -77,12 +114,18 @@ function requireStringField(obj: Record<string, unknown>, field: string, sourceL
   return value.trim();
 }
 
-function loadVertexCredentialsJson(filePathValue: string): string {
-  return JSON.stringify(loadJsonObjectFromFile(filePathValue, "Vertex credentials"));
+function loadVertexCredentialsJson(filePathValue: string, basePath?: string, required = true): string | undefined {
+  const obj = loadJsonObjectFromFile(filePathValue, "Vertex credentials", basePath, required);
+  return obj ? JSON.stringify(obj) : undefined;
 }
 
-function loadAzureOpenAiConfig(filePathValue: string): AzureOpenAiConfig {
-  const parsed = loadJsonObjectFromFile(filePathValue, "Azure OpenAI config");
+function loadAzureOpenAiConfig(
+  filePathValue: string,
+  basePath?: string,
+  required = true
+): AzureOpenAiConfig | undefined {
+  const parsed = loadJsonObjectFromFile(filePathValue, "Azure OpenAI config", basePath, required);
+  if (!parsed) return undefined;
   return {
     apiBase: requireStringField(parsed, "apiBase", "Azure OpenAI config file"),
     apiKey: requireStringField(parsed, "apiKey", "Azure OpenAI config file")
@@ -93,10 +136,23 @@ function resolveVertexConfig(options: {
   project?: string;
   location?: string;
   credentialsFile?: string;
+  basePath?: string;
+  required?: boolean;
 }): VertexConfig | undefined {
-  const { project, location, credentialsFile } = options;
+  const { project, location, credentialsFile, basePath, required } = options;
   const hasAny = Boolean(project || location || credentialsFile);
   if (!hasAny) return undefined;
+  if (!credentialsFile) {
+    if (required) {
+      throw new Error(
+        "vertexCredentialsFile is required when enabling Vertex provider. Set vertexCredentialsFile in cdk-settings.yaml, " +
+          "pass -c vertexCredentialsFile=<path>, or set VERTEX_CREDENTIALS_FILE."
+      );
+    }
+    return undefined;
+  }
+  const credentialsJson = loadVertexCredentialsJson(credentialsFile, basePath, required);
+  if (!credentialsJson) return undefined;
   if (!project) {
     throw new Error(
       "vertexAiProject is required when enabling Vertex provider. Set it in cdk-settings.yaml or pass -c vertexAiProject=<gcp-project-id>."
@@ -107,16 +163,10 @@ function resolveVertexConfig(options: {
       "vertexAiLocation is required when enabling Vertex provider. Set it in cdk-settings.yaml or pass -c vertexAiLocation=<gcp-region>."
     );
   }
-  if (!credentialsFile) {
-    throw new Error(
-      "vertexCredentialsFile is required when enabling Vertex provider. Set vertexCredentialsFile in cdk-settings.yaml, " +
-        "pass -c vertexCredentialsFile=<path>, or set VERTEX_CREDENTIALS_FILE."
-    );
-  }
   return {
     project,
     location,
-    credentialsJson: loadVertexCredentialsJson(credentialsFile)
+    credentialsJson
   };
 }
 
@@ -125,6 +175,7 @@ const settingsFilePath = path.resolve(process.cwd(), String(settingsFileContext 
 if (!fs.existsSync(settingsFilePath)) {
   throw new Error(`Missing CDK settings file: ${settingsFilePath}`);
 }
+const settingsBaseDir = path.dirname(settingsFilePath);
 
 const parsedSettings = YAML.parse(fs.readFileSync(settingsFilePath, "utf8")) as unknown;
 if (!parsedSettings || typeof parsedSettings !== "object" || Array.isArray(parsedSettings)) {
@@ -133,21 +184,33 @@ if (!parsedSettings || typeof parsedSettings !== "object" || Array.isArray(parse
 const settings = parsedSettings as CdkSettings;
 
 const microvmRegion = asOptionalString(app.node.tryGetContext("microvmRegion")) ?? settings.microvmRegion ?? process.env.CDK_DEFAULT_REGION;
-const vertexAiProject = asOptionalString(app.node.tryGetContext("vertexAiProject")) ?? settings.vertexAiProject;
-const vertexAiLocation = asOptionalString(app.node.tryGetContext("vertexAiLocation")) ?? settings.vertexAiLocation;
-const vertexCredentialsFile =
-  asOptionalString(app.node.tryGetContext("vertexCredentialsFile")) ??
-  settings.vertexCredentialsFile ??
-  asOptionalString(process.env.VERTEX_CREDENTIALS_FILE);
-const azureOpenAiConfigFile =
-  asOptionalString(app.node.tryGetContext("azureOpenAiConfigFile")) ??
-  settings.azureOpenAiConfigFile ??
-  asOptionalString(process.env.AZURE_OPENAI_CONFIG_FILE);
-const azureOpenAiConfig = azureOpenAiConfigFile ? loadAzureOpenAiConfig(azureOpenAiConfigFile) : undefined;
+const vertexAiProject = asOverridableString(app.node.tryGetContext("vertexAiProject"), settings.vertexAiProject);
+const vertexAiLocation = asOverridableString(app.node.tryGetContext("vertexAiLocation"), settings.vertexAiLocation);
+const vertexCredentialsFile = asOverridableString(
+  app.node.tryGetContext("vertexCredentialsFile"),
+  settings.vertexCredentialsFile,
+  process.env.VERTEX_CREDENTIALS_FILE
+);
+const azureOpenAiConfigFile = asOverridableString(
+  app.node.tryGetContext("azureOpenAiConfigFile"),
+  settings.azureOpenAiConfigFile,
+  process.env.AZURE_OPENAI_CONFIG_FILE
+);
+
+const isExplicitAzure = Boolean(app.node.tryGetContext("azureOpenAiConfigFile") || process.env.AZURE_OPENAI_CONFIG_FILE);
+const azureOpenAiConfig = azureOpenAiConfigFile ? loadAzureOpenAiConfig(azureOpenAiConfigFile, settingsBaseDir, isExplicitAzure) : undefined;
+
+const isExplicitVertex = Boolean(
+  app.node.tryGetContext("vertexCredentialsFile") ||
+  app.node.tryGetContext("vertexAiProject") ||
+  process.env.VERTEX_CREDENTIALS_FILE
+);
 const vertexConfig = resolveVertexConfig({
   project: vertexAiProject,
   location: vertexAiLocation,
-  credentialsFile: vertexCredentialsFile
+  credentialsFile: vertexCredentialsFile,
+  basePath: settingsBaseDir,
+  required: isExplicitVertex
 });
 const microvmArtifactKey = asOptionalString(app.node.tryGetContext("microvmArtifactKey")) ?? settings.microvmArtifactKey;
 const microvmEgressConnectorArn = asOptionalString(app.node.tryGetContext("microvmEgressConnectorArn")) ?? settings.microvmEgressConnectorArn;

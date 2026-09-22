@@ -537,6 +537,28 @@ def _forward_to_microvm(event: dict) -> dict:
             "headers": error_headers,
             "body": response_body,
         }
+    except urllib.error.URLError as error:
+        is_timeout = isinstance(error.reason, TimeoutError) or "timed out" in str(error.reason).lower()
+        status_code = 504 if is_timeout else 502
+        error_type = "timeout" if is_timeout else "bad_gateway"
+        _logger.error(
+            "proxy.request.url_error requestId=%s status=%s reason=%s",
+            request_id,
+            status_code,
+            str(error.reason),
+        )
+        return {
+            "statusCode": status_code,
+            "isBase64Encoded": False,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({
+                "error": {
+                    "message": f"MicroVM upstream error: {error.reason}",
+                    "type": error_type,
+                    "code": status_code,
+                }
+            }),
+        }
     except Exception:
         _logger.exception("proxy.request.exception requestId=%s path=%s", request_id, request_path)
         raise

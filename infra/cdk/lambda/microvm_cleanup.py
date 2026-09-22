@@ -6,6 +6,7 @@ os.environ["AWS_DATA_PATH"] = MODEL_PATH if not existing_data_path else f"{MODEL
 
 import boto3  # noqa: E402
 from botocore.exceptions import ClientError  # noqa: E402
+import time  # noqa: E402
 
 MICROVM_REGION = os.environ["MICROVM_REGION"]
 _microvms = boto3.client("lambda-microvms", region_name=MICROVM_REGION)
@@ -50,7 +51,6 @@ def _wait_for_no_running_microvms(microvm_identifier: str, attempts: int = 60, d
                 break
         if not still_running:
             return
-        import time
 
         time.sleep(delay_seconds)
     raise RuntimeError(f"Timed out waiting for MicroVM termination for image {microvm_identifier}.")

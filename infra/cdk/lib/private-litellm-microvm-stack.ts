@@ -1,6 +1,15 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
+
+function resolveAssetDir(dirName: string): string {
+  const direct = path.join(__dirname, "..", dirName);
+  if (fs.existsSync(direct)) return direct;
+  const fromDist = path.join(__dirname, "..", "..", dirName);
+  if (fs.existsSync(fromDist)) return fromDist;
+  return path.resolve(process.cwd(), dirName);
+}
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -197,7 +206,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     const proxyFunction = new lambda.Function(this, "MicrovmAuthProxyFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "microvm_proxy.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda")),
+      code: lambda.Code.fromAsset(resolveAssetDir("lambda")),
       timeout: cdk.Duration.seconds(29),
       memorySize: 256,
       logGroup: proxyLogGroup,
@@ -362,7 +371,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         throw new Error("CDK_DEFAULT_ACCOUNT is required for useCodebuildEcrBaseImage unless microvmContainerBaseImage is explicitly set.");
       }
       const selectedBaseImage = props.microvmContainerBaseImage ?? (props.useCodebuildEcrBaseImage ? mirroredBaseImage : undefined);
-      const microvmImageSourceDir = path.join(__dirname, "..", "microvm-image");
+      const microvmImageSourceDir = resolveAssetDir("microvm-image");
       const artifactPath = createMicrovmImageSourceDir(microvmImageSourceDir, {
         baseImage: selectedBaseImage,
         enableAzure: azureProviderEnabled,
@@ -428,7 +437,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "microvm_cleanup.handler",
       timeout: cdk.Duration.minutes(5),
-      code: lambda.Code.fromAsset(path.join(__dirname, "..", "lambda")),
+      code: lambda.Code.fromAsset(resolveAssetDir("lambda")),
       environment: {
         MICROVM_REGION: props.microvmRegion
       }
@@ -509,5 +518,13 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
     new cdk.CfnOutput(this, "MicrovmProxyCacheTableName", { value: proxyCacheTable.tableName });
     new cdk.CfnOutput(this, "IamPrincipalKeyMapTableName", { value: iamPrincipalKeyMapTable.tableName });
     new cdk.CfnOutput(this, "IamRouteCallerRoleArn", { value: iamRouteCallerRole.roleArn });
+    new cdk.CfnOutput(this, "MicrovmAuthProxyFunctionName", {
+      value: proxyFunction.functionName,
+      description: "Lambda function name for the MicroVM auth proxy"
+    });
+    new cdk.CfnOutput(this, "MicrovmEgressConnectorArn", {
+      value: runtimeEgressConnectorArn,
+      description: "Resolved VPC egress network connector ARN for Lambda MicroVMs"
+    });
   }
 }

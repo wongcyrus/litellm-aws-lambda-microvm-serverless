@@ -9,6 +9,7 @@ MODELS=(
   "nova-2-lite"
   "minimax-m2.5"
   "kimi-k2.5"
+  "kimi-k3"
 )
 
 for model in "${MODELS[@]}"; do

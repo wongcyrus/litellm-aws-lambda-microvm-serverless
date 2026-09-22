@@ -87,17 +87,34 @@ MASTER_KEY_SECRET_ARN="$(aws cloudformation describe-stacks \
   --region "$AWS_REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='LiteLlmMasterKeySecretArn'].OutputValue" \
   --output text)"
-PROXY_FUNCTION_NAME="$(aws cloudformation describe-stack-resource \
+PROXY_FUNCTION_NAME="$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \
-  --logical-resource-id "MicrovmAuthProxyFunctionAC798DFD" \
-  --query "StackResourceDetail.PhysicalResourceId" \
-  --output text)"
-MICROVM_EGRESS_CONNECTOR_ARN="$(aws lambda get-function-configuration \
+  --query "Stacks[0].Outputs[?OutputKey=='MicrovmAuthProxyFunctionName'].OutputValue" \
+  --output text 2>/dev/null || true)"
+if [[ -z "$PROXY_FUNCTION_NAME" || "$PROXY_FUNCTION_NAME" == "None" ]]; then
+  PROXY_FUNCTION_NAME="$(aws cloudformation describe-stack-resource \
+    --stack-name "$STACK_NAME" \
+    --region "$AWS_REGION" \
+    --logical-resource-id "MicrovmAuthProxyFunctionAC798DFD" \
+    --query "StackResourceDetail.PhysicalResourceId" \
+    --output text 2>/dev/null || true)"
+fi
+
+MICROVM_EGRESS_CONNECTOR_ARN="$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
   --region "$AWS_REGION" \
-  --function-name "$PROXY_FUNCTION_NAME" \
-  --query "Environment.Variables.MICROVM_EGRESS_CONNECTOR_ARN" \
-  --output text)"
+  --query "Stacks[0].Outputs[?OutputKey=='MicrovmEgressConnectorArn'].OutputValue" \
+  --output text 2>/dev/null || true)"
+if [[ -z "$MICROVM_EGRESS_CONNECTOR_ARN" || "$MICROVM_EGRESS_CONNECTOR_ARN" == "None" ]]; then
+  if [[ -n "$PROXY_FUNCTION_NAME" && "$PROXY_FUNCTION_NAME" != "None" ]]; then
+    MICROVM_EGRESS_CONNECTOR_ARN="$(aws lambda get-function-configuration \
+      --region "$AWS_REGION" \
+      --function-name "$PROXY_FUNCTION_NAME" \
+      --query "Environment.Variables.MICROVM_EGRESS_CONNECTOR_ARN" \
+      --output text 2>/dev/null || true)"
+  fi
+fi
 
 if [[ -z "$MICROVM_IMAGE_IDENTIFIER" || "$MICROVM_IMAGE_IDENTIFIER" == "None" ]]; then
   echo "Error: missing MicrovmImageRef output on stack $STACK_NAME" >&2

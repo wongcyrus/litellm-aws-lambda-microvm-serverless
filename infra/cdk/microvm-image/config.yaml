@@ -17,6 +17,12 @@ model_list:
       aws_region_name: "us-east-1"      
       drop_params: true
 
+  - model_name: kimi-k3
+    litellm_params:
+      model: bedrock/global.moonshotai.kimi-k3
+      aws_region_name: "us-east-1"
+      drop_params: true
+
   # Azure OpenAI Configuration (gpt-5.2, gpt-5.4*, gpt-5.6*)
   - model_name: gpt-5.2
     model_info:
