@@ -34,6 +34,7 @@ This page is a fast index for navigating the docs set.
 | `publicMicrovm=true` architecture | `docs/cdk-design.md` |
 | `publicMicrovm=false` architecture | `docs/cdk-design.md` |
 | Lambda proxy call interaction | `docs/cdk-design.md` |
+| Cold-start retry sequence | `docs/cdk-design.md` |
 | IAM -> LiteLLM key flow | `docs/auth-and-keys.md` |
 
 ## Core implementation files

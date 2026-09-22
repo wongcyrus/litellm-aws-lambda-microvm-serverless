@@ -105,7 +105,7 @@ if [[ -z "$API_URL" || -z "$ROLE_ARN" ]]; then
     echo "Run ./scripts/deploy-stack.sh first, or pass --api-url and --role-arn explicitly." >&2
     exit 1
   fi
-  RESOLVED_VALUES="$(python - <<'PY' "$OUTPUTS_FILE" "$STACK_NAME"
+  RESOLVED_VALUES="$(python3 - <<'PY' "$OUTPUTS_FILE" "$STACK_NAME"
 import json
 import sys
 
@@ -164,7 +164,7 @@ import httpx
 from botocore.auth import SigV4Auth
 PY
 then
-  "$PIP_BIN" install --quiet 'strands-agents[openai]' strands-agents-tools boto3 httpx botocore
+  "$PIP_BIN" install --quiet 'strands-agents[openai]' strands-agents-tools boto3 httpx botocore 'botocore[crt]'
 fi
 
 echo "Using API URL: ${API_URL%/}"

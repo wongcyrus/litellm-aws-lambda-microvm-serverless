@@ -190,3 +190,90 @@ sequenceDiagram
   - bind cached token to `token_microvm_id`
   - invalidate token when active `microvm_id` changes or cached VM lookup fails
   - persist/load `token_microvm_id` in DynamoDB cache item
+
+## Aurora Serverless v2 scale-to-zero (`minCapacity: 0`)
+
+The database cluster is configured with `serverlessV2MinCapacity: 0`:
+
+```typescript
+writer: rds.ClusterInstance.serverlessV2("writer"),
+serverlessV2MinCapacity: 0,
+serverlessV2MaxCapacity: 2,
+```
+
+### Cost benefits
+
+- **Idle compute cost**: **$0.00 / hr** when auto-paused.
+- **Inactivity threshold**: Auto-pauses after 300 seconds (5 minutes) of 0 active connections.
+- **Monthly savings**: Saves ~$43.80/month compared to keeping a baseline 0.5 ACU ($0.12/ACU-hr).
+- **RDS Proxy consideration**: RDS Proxy is intentionally **not** used because proxy connection pools maintain continuous heartbeat connections that prevent Aurora from auto-pausing.
+
+### Cold-start resume latency & connection timeouts
+
+When Aurora is paused at 0 ACUs, the first incoming TCP connection triggers an automatic resume:
+
+- **Resume duration**: ~12 – 18 seconds before PostgreSQL accepts TCP connections.
+- **Prisma timeout configuration**: Prisma's default connection timeout is only 5 seconds, which would prematurely fail with `P1001: Can't reach database server`.
+- **Database URL fix**: The connection string in `private-litellm-microvm-stack.ts` explicitly configures:
+  ```text
+  :5432/litellm?sslmode=prefer&connect_timeout=30&pool_timeout=30
+  ```
+  This ensures the database driver waits up to 30 seconds for Aurora to resume before timing out.
+
+## Cold-start handling & proxy retry loop
+
+When a request arrives during a cold start (both MicroVM and Aurora are suspended/idle):
+
+1. **MicroVM hypervisor boots**: ~2 – 3 seconds.
+2. **Aurora resumes**: ~12 – 18 seconds.
+3. **Prisma migration verification & LiteLLM uvicorn startup**: ~3 – 4 seconds.
+4. **Total cold start latency**: ~20 – 24 seconds.
+
+### The `502 APP_CONNECT_FAILED` problem
+
+While LiteLLM is starting inside the container, the Firecracker microVM router responds with `HTTP 502` and `x-aws-proxy-error: APP_CONNECT_FAILED` because port 4000 is not yet bound by uvicorn.
+
+### The proxy retry loop
+
+In `infra/cdk/lambda/microvm_proxy.py`:
+
+- The proxy inspects `context.get_remaining_time_in_millis()`.
+- If an upstream `502 APP_CONNECT_FAILED` or connection `URLError` occurs and remaining Lambda time is greater than 3,500 ms, the proxy sleeps for 1.5 seconds and retries (up to 20 attempts).
+- This absorbs the entire cold-start window transparently, returning a `200 OK` to the client on the very first request without exposing 502 errors.
+- The standard API Gateway integration timeout is 29 seconds (which can be increased up to 300 seconds via AWS Service Quotas for Regional/Private REST APIs if needed).
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Client
+  participant APIGW as API Gateway (29s timeout)
+  participant Proxy as Lambda Auth Proxy
+  participant MicroVM as MicroVM / LiteLLM (:4000)
+  participant Aurora as Aurora Serverless v2 (0 ACU)
+
+  Client->>APIGW: POST /chat/completions
+  APIGW->>Proxy: Invoke
+  Proxy->>MicroVM: Forward request
+  MicroVM-->>Aurora: Prisma TCP connection (triggers resume)
+  Note over Aurora: Resuming from 0 ACUs (~15s)
+  MicroVM-->>Proxy: 502 APP_CONNECT_FAILED (LiteLLM booting)
+  Note over Proxy: Catch 502, check remainingMs > 3500ms
+  Proxy->>Proxy: Sleep 1.5s
+  Proxy->>MicroVM: Retry attempt 2..N
+  Note over Aurora: Aurora ACTIVE (port 5432 open)
+  Note over MicroVM: LiteLLM listening on :4000
+  MicroVM-->>Proxy: 200 OK (Model response)
+  Proxy-->>APIGW: 200 OK
+  APIGW-->>Client: 200 OK (Clean cold start)
+```
+
+## Build-time vs runtime network isolation
+
+A critical design requirement is separating image build networking from runtime private VPC database networking:
+
+| Lifecycle phase | Network connector used | Purpose |
+|---|---|---|
+| **Build phase** (`AWS::Lambda::MicrovmImage`) | `imageDefaultEgressConnectorArn` (`ALL_EGRESS`) | Allows AWS Lambda's CloudFormation builder to pull base container images from public registries (`ghcr.io/berriai/litellm-database:main-stable`). |
+| **Runtime phase** (`run_microvm()`) | `MICROVM_EGRESS_CONNECTOR_ARN` (Private VPC connector) | Dynamically attached at runtime by `microvm_proxy.py` to route traffic into the VPC to reach Aurora PostgreSQL on private subnet `10.0.5.8:5432`. |
+
+This decoupling ensures fresh CDK deployments synthesize and build container images reliably without encountering network build failures.

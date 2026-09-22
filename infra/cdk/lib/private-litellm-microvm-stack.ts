@@ -405,7 +405,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
               dbCluster.secret!.secretValueFromJson("password").toString(),
               "@",
               dbCluster.clusterEndpoint.hostname,
-              ":5432/litellm"
+              ":5432/litellm?sslmode=prefer&connect_timeout=30&pool_timeout=30"
             ])
           },
           {

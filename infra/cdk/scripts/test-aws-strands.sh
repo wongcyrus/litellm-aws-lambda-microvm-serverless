@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT="${PROMPT:-hi}"
-MAX_TOKENS="${MAX_TOKENS:-16}"
+MAX_TOKENS="${MAX_TOKENS:-256}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
 MODELS=(
   "nova-2-lite"

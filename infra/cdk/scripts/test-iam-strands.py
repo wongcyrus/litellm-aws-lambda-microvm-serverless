@@ -131,6 +131,10 @@ def strands_chat(
         ) from exc
 
     async_client = httpx.AsyncClient(auth=auth, timeout=60.0)
+    model_params = {"max_tokens": max_tokens}
+    if temperature is not None and model not in {"kimi-k3"}:
+        model_params["temperature"] = temperature
+
     openai_model = OpenAIModel(
         client_args={
             "api_key": "iam-auth",
@@ -138,7 +142,7 @@ def strands_chat(
             "http_client": async_client,
         },
         model_id=model,
-        params={"max_tokens": max_tokens, "temperature": temperature},
+        params=model_params,
     )
     agent = Agent(model=openai_model, callback_handler=None)
     result = agent(prompt)

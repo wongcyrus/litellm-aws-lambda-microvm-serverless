@@ -95,3 +95,18 @@ For raw API tests, use correct header split:
 
 - `x-api-key` = API Gateway key from `AwsGatewayApiKeySecretArn`
 - `Authorization` = Bearer user key from LiteLLM key generation
+
+## Reasoning model considerations (`kimi-k3`)
+
+When testing reasoning models such as `moonshotai.kimi-k3`:
+
+1. **Thinking token budget**: Reasoning models consume output tokens for their internal thinking/chain-of-thought process before outputting the user response. Set `MAX_TOKENS` to at least `256` (the default in `test-aws-strands.sh`).
+2. **Temperature parameter**: AWS Bedrock strictly disallows passing `temperature` for `moonshotai.kimi-k3`. The test scripts (`test-api-key-strands.py` and `test-iam-strands.py`) dynamically omit `temperature` for `kimi-k3` to comply with Bedrock's API validation.
+
+## Cold-start testing notes
+
+When Aurora is paused at 0 ACUs or the MicroVM is suspended:
+- The first request incurs a ~20–24s cold start while Aurora resumes and LiteLLM boots.
+- The proxy retry loop automatically handles cold start retries every 1.5s.
+- Ensure any external test client has an HTTP client timeout of at least **30 seconds** so it does not disconnect before the proxy finishes the cold start.
+

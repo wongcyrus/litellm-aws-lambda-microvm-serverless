@@ -344,7 +344,7 @@ def _create_microvm_auth_token(microvm_id: str) -> str:
     return str(token)
 
 
-def _forward_to_microvm(event: dict) -> dict:
+def _forward_to_microvm(event: dict, context: Any = None) -> dict:
     microvm_id, microvm_endpoint = _ensure_running_microvm()
     method = event.get("httpMethod", "GET")
     request_path = str(event.get("path", "/") or "/")
@@ -459,114 +459,169 @@ def _forward_to_microvm(event: dict) -> dict:
         else:
             request_body = body.encode("utf-8")
 
-    request = urllib.request.Request(
-        url=url,
-        data=request_body,
-        headers=forwarded_headers,
-        method=method,
-    )
+    retry_count = 0
+    max_retries = 20
 
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            response_bytes = response.read()
-            response_headers = dict(response.headers.items())
-            content_type = str(response_headers.get("content-type") or response_headers.get("Content-Type") or "")
-            lowered_content_type = content_type.lower()
-            is_text_response = (
-                lowered_content_type.startswith("text/")
-                or "json" in lowered_content_type
-                or "javascript" in lowered_content_type
-                or "xml" in lowered_content_type
-                or "svg" in lowered_content_type
+    while True:
+        request = urllib.request.Request(
+            url=url,
+            data=request_body,
+            headers=forwarded_headers,
+            method=method,
+        )
+
+        remaining_ms = (
+            context.get_remaining_time_in_millis()
+            if context and hasattr(context, "get_remaining_time_in_millis")
+            else 28000
+        )
+        attempt_timeout = max(2.0, min(15.0, (remaining_ms - 2000) / 1000.0))
+
+        try:
+            with urllib.request.urlopen(request, timeout=attempt_timeout) as response:
+                response_bytes = response.read()
+                response_headers = dict(response.headers.items())
+                content_type = str(response_headers.get("content-type") or response_headers.get("Content-Type") or "")
+                lowered_content_type = content_type.lower()
+                is_text_response = (
+                    lowered_content_type.startswith("text/")
+                    or "json" in lowered_content_type
+                    or "javascript" in lowered_content_type
+                    or "xml" in lowered_content_type
+                    or "svg" in lowered_content_type
+                )
+                if is_text_response:
+                    response_body = response_bytes.decode("utf-8", errors="replace")
+                    is_base64_encoded = False
+                else:
+                    response_body = base64.b64encode(response_bytes).decode("ascii")
+                    is_base64_encoded = True
+
+                for header_name in ["content-length", "Content-Length", "transfer-encoding", "Transfer-Encoding"]:
+                    response_headers.pop(header_name, None)
+                _logger.info(
+                    "proxy.request.ok requestId=%s status=%s contentType=%s bytes=%s",
+                    request_id,
+                    response.status,
+                    content_type,
+                    len(response_bytes),
+                )
+
+                return {
+                    "statusCode": response.status,
+                    "isBase64Encoded": is_base64_encoded,
+                    "headers": response_headers,
+                    "body": response_body,
+                }
+        except urllib.error.HTTPError as error:
+            error_body = error.read()
+            error_headers = dict(error.headers.items()) if error.headers else {}
+            error_content_type = str(error_headers.get("content-type") or error_headers.get("Content-Type") or "")
+
+            is_cold_start_502 = (
+                error.code == 502
+                and (
+                    "APP_CONNECT_FAILED" in str(error_headers)
+                    or "APP_CONNECT_FAILED" in str(error_body)
+                    or len(error_body) == 0
+                )
             )
-            if is_text_response:
-                response_body = response_bytes.decode("utf-8", errors="replace")
+
+            current_remaining_ms = (
+                context.get_remaining_time_in_millis()
+                if context and hasattr(context, "get_remaining_time_in_millis")
+                else 0
+            )
+
+            if is_cold_start_502 and current_remaining_ms > 3500 and retry_count < max_retries:
+                retry_count += 1
+                _logger.info(
+                    "proxy.request.retry_cold_start requestId=%s attempt=%s remainingMs=%s",
+                    request_id,
+                    retry_count,
+                    current_remaining_ms,
+                )
+                time.sleep(1.5)
+                continue
+
+            lowered_error_content_type = error_content_type.lower()
+            is_text_error = (
+                lowered_error_content_type.startswith("text/")
+                or "json" in lowered_error_content_type
+                or "javascript" in lowered_error_content_type
+                or "xml" in lowered_error_content_type
+                or "svg" in lowered_error_content_type
+            )
+            if is_text_error:
+                response_body = error_body.decode("utf-8", errors="replace")
                 is_base64_encoded = False
             else:
-                response_body = base64.b64encode(response_bytes).decode("ascii")
+                response_body = base64.b64encode(error_body).decode("ascii")
                 is_base64_encoded = True
 
             for header_name in ["content-length", "Content-Length", "transfer-encoding", "Transfer-Encoding"]:
-                response_headers.pop(header_name, None)
-            _logger.info(
-                "proxy.request.ok requestId=%s status=%s contentType=%s bytes=%s",
+                error_headers.pop(header_name, None)
+            _logger.warning(
+                "proxy.request.http_error requestId=%s status=%s contentType=%s bytes=%s",
                 request_id,
-                response.status,
-                content_type,
-                len(response_bytes),
+                error.code,
+                error_content_type,
+                len(error_body),
             )
 
             return {
-                "statusCode": response.status,
+                "statusCode": error.code,
                 "isBase64Encoded": is_base64_encoded,
-                "headers": response_headers,
+                "headers": error_headers,
                 "body": response_body,
             }
-    except urllib.error.HTTPError as error:
-        error_body = error.read()
-        error_headers = dict(error.headers.items()) if error.headers else {}
-        error_content_type = str(error_headers.get("content-type") or error_headers.get("Content-Type") or "")
-        lowered_error_content_type = error_content_type.lower()
-        is_text_error = (
-            lowered_error_content_type.startswith("text/")
-            or "json" in lowered_error_content_type
-            or "javascript" in lowered_error_content_type
-            or "xml" in lowered_error_content_type
-            or "svg" in lowered_error_content_type
-        )
-        if is_text_error:
-            response_body = error_body.decode("utf-8", errors="replace")
-            is_base64_encoded = False
-        else:
-            response_body = base64.b64encode(error_body).decode("ascii")
-            is_base64_encoded = True
+        except urllib.error.URLError as error:
+            current_remaining_ms = (
+                context.get_remaining_time_in_millis()
+                if context and hasattr(context, "get_remaining_time_in_millis")
+                else 0
+            )
+            if current_remaining_ms > 3500 and retry_count < max_retries:
+                retry_count += 1
+                _logger.info(
+                    "proxy.request.retry_url_error requestId=%s attempt=%s reason=%s remainingMs=%s",
+                    request_id,
+                    retry_count,
+                    str(error.reason),
+                    current_remaining_ms,
+                )
+                time.sleep(1.5)
+                continue
 
-        for header_name in ["content-length", "Content-Length", "transfer-encoding", "Transfer-Encoding"]:
-            error_headers.pop(header_name, None)
-        _logger.warning(
-            "proxy.request.http_error requestId=%s status=%s contentType=%s bytes=%s",
-            request_id,
-            error.code,
-            error_content_type,
-            len(error_body),
-        )
-
-        return {
-            "statusCode": error.code,
-            "isBase64Encoded": is_base64_encoded,
-            "headers": error_headers,
-            "body": response_body,
-        }
-    except urllib.error.URLError as error:
-        is_timeout = isinstance(error.reason, TimeoutError) or "timed out" in str(error.reason).lower()
-        status_code = 504 if is_timeout else 502
-        error_type = "timeout" if is_timeout else "bad_gateway"
-        _logger.error(
-            "proxy.request.url_error requestId=%s status=%s reason=%s",
-            request_id,
-            status_code,
-            str(error.reason),
-        )
-        return {
-            "statusCode": status_code,
-            "isBase64Encoded": False,
-            "headers": {"content-type": "application/json"},
-            "body": json.dumps({
-                "error": {
-                    "message": f"MicroVM upstream error: {error.reason}",
-                    "type": error_type,
-                    "code": status_code,
-                }
-            }),
-        }
-    except Exception:
-        _logger.exception("proxy.request.exception requestId=%s path=%s", request_id, request_path)
-        raise
+            is_timeout = isinstance(error.reason, TimeoutError) or "timed out" in str(error.reason).lower()
+            status_code = 504 if is_timeout else 502
+            error_type = "timeout" if is_timeout else "bad_gateway"
+            _logger.error(
+                "proxy.request.url_error requestId=%s status=%s reason=%s",
+                request_id,
+                status_code,
+                str(error.reason),
+            )
+            return {
+                "statusCode": status_code,
+                "isBase64Encoded": False,
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({
+                    "error": {
+                        "message": f"MicroVM upstream error: {error.reason}",
+                        "type": error_type,
+                        "code": status_code,
+                    }
+                }),
+            }
+        except Exception:
+            _logger.exception("proxy.request.exception requestId=%s path=%s", request_id, request_path)
+            raise
 
 
 def handler(event, context):
     try:
-        return _forward_to_microvm(event)
+        return _forward_to_microvm(event, context)
     except UnauthorizedPrincipalError as error:
         _logger.warning("proxy.request.unauthorized reason=%s", str(error))
         return {

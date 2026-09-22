@@ -155,9 +155,9 @@ if [[ -z "$MASTER_KEY_SECRET_ARN" || "$MASTER_KEY_SECRET_ARN" == "None" ]]; then
   exit 1
 fi
 API_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)"
-API_GATEWAY_KEY="$(python -c 'import json,sys; print(json.loads(sys.stdin.read())["apiKey"])' <<<"$API_KEY_JSON")"
+API_GATEWAY_KEY="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["apiKey"])' <<<"$API_KEY_JSON")"
 MASTER_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$MASTER_KEY_SECRET_ARN" --query SecretString --output text)"
-MASTER_KEY="$(python - <<'PY' "$MASTER_KEY_JSON"
+MASTER_KEY="$(python3 - <<'PY' "$MASTER_KEY_JSON"
 import json
 import sys
 value = sys.argv[1]
@@ -178,7 +178,7 @@ fi
 if [[ -n "$CUSTOM_KEY" ]]; then
   GENERATED_KEY="$CUSTOM_KEY"
 else
-  GENERATED_KEY="$(python -c 'import secrets,string; chars=string.ascii_letters+string.digits; print("sk-" + "".join(secrets.choice(chars) for _ in range(45)))')"
+  GENERATED_KEY="$(python3 -c 'import secrets,string; chars=string.ascii_letters+string.digits; print("sk-" + "".join(secrets.choice(chars) for _ in range(45)))')"
 fi
 GENERATED_KEY_LEN="${#GENERATED_KEY}"
 if (( GENERATED_KEY_LEN < 20 || GENERATED_KEY_LEN > 128 )); then
@@ -190,7 +190,7 @@ if [[ "${GENERATED_KEY:0:3}" != "sk-" ]]; then
   exit 1
 fi
 
-REQUEST_BODY="$(python - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODEL_LIST" "$GENERATED_KEY" "$STACK_NAME" "$MAX_BUDGET" "$BUDGET_DURATION" "$KEY_TYPE"
+REQUEST_BODY="$(python3 - <<'PY' "$KEY_ALIAS" "$DURATION" "$MODEL_LIST" "$GENERATED_KEY" "$STACK_NAME" "$MAX_BUDGET" "$BUDGET_DURATION" "$KEY_TYPE"
 import json
 import sys
 
@@ -237,7 +237,7 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   exit 1
 fi
 
-RETURNED_KEY="$(python -c 'import json,sys; obj=json.loads(sys.stdin.read()); print(obj.get("key") or obj.get("token") or "")' <<<"$HTTP_BODY")"
+RETURNED_KEY="$(python3 -c 'import json,sys; obj=json.loads(sys.stdin.read()); print(obj.get("key") or obj.get("token") or "")' <<<"$HTTP_BODY")"
 if [[ -z "$RETURNED_KEY" ]]; then
   echo "Error: key generation succeeded but response did not include key/token." >&2
   echo "$HTTP_BODY" >&2

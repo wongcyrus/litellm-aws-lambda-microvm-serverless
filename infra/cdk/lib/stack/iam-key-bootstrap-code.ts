@@ -37,6 +37,26 @@ def _get_existing_mapping(table_name: str, principal_arn: str) -> dict | None:
     return item if item else None
 
 
+def _invoke_key_delete(proxy_function_name: str, master_key: str, key_alias: str):
+    body = {"key_aliases": [key_alias]}
+    event = {
+        "httpMethod": "POST",
+        "path": "/key/delete",
+        "headers": {
+            "Authorization": f"Bearer {master_key}",
+            "Content-Type": "application/json",
+        },
+        "queryStringParameters": None,
+        "body": json.dumps(body),
+        "isBase64Encoded": False,
+    }
+    lambda_client.invoke(
+        FunctionName=proxy_function_name,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(event).encode("utf-8"),
+    )
+
+
 def _invoke_key_generate(
     proxy_function_name: str,
     master_key: str,
@@ -76,14 +96,28 @@ def _invoke_key_generate(
     if result.get("isBase64Encoded"):
         body = base64.b64decode(body).decode("utf-8", errors="replace")
     if status_code != 200:
-        raise RuntimeError(f"/key/generate failed: status={status_code} body={body}")
+        if "already exists" in body:
+            _invoke_key_delete(proxy_function_name, master_key, key_alias)
+            invoke_resp = lambda_client.invoke(
+                FunctionName=proxy_function_name,
+                InvocationType="RequestResponse",
+                Payload=json.dumps(event).encode("utf-8"),
+            )
+            payload = invoke_resp["Payload"].read().decode("utf-8") or "{}"
+            result = json.loads(payload)
+            status_code = int(result.get("statusCode") or 0)
+            body = str(result.get("body") or "")
+            if result.get("isBase64Encoded"):
+                body = base64.b64decode(body).decode("utf-8", errors="replace")
+        if status_code != 200:
+            raise RuntimeError(f"/key/generate failed: status={status_code} body={body}")
     body_json = json.loads(body)
     returned_key = body_json.get("key") or body_json.get("token")
     if returned_key != key_value:
         raise RuntimeError("LiteLLM returned a different key than requested.")
 
 
-def _wait_until_litellm_ready(proxy_function_name: str, max_attempts: int = 60, delay_seconds: int = 2) -> None:
+def _wait_until_litellm_ready(proxy_function_name: str, max_attempts: int = 120, delay_seconds: int = 3) -> None:
     event = {
         "httpMethod": "GET",
         "path": "/health/liveliness",
@@ -146,7 +180,17 @@ def handler(event, context):
         existing_alias = str(existing.get("key_alias", {}).get("S") or "")
         existing_key = str(existing.get("litellm_key", {}).get("S") or "")
         existing_key_type = str(existing.get("key_type", {}).get("S") or "")
-        if existing_alias == key_alias and existing_key and existing_key_type == key_type:
+        if existing_alias == key_alias and existing_key:
+            if existing_key_type != key_type:
+                ddb.put_item(
+                    TableName=table_name,
+                    Item={
+                        "principal_arn": {"S": principal_arn},
+                        "litellm_key": {"S": existing_key},
+                        "key_alias": {"S": key_alias},
+                        "key_type": {"S": key_type},
+                    },
+                )
             return {"PhysicalResourceId": physical_id}
 
     if request_type in {"Create", "Update"}:
