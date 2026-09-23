@@ -55,7 +55,7 @@ def normalize_api_url(api_url: str) -> str:
     return api_url.rstrip("/")
 
 
-def health_check(api_url: str, key: str) -> None:
+def health_check(api_url: str, key: str, max_retries: int = 3, retry_delay: float = 3.0) -> None:
     req = urllib.request.Request(
         f"{api_url}/health/liveliness",
         headers={
@@ -65,14 +65,23 @@ def health_check(api_url: str, key: str) -> None:
         },
         method="GET",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            if resp.status != 200:
-                raise SystemExit(f"Error: health check HTTP {resp.status}: {body}")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise SystemExit(f"Error: health check HTTP {exc.code}: {body}") from exc
+    for attempt in range(1, max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+                if resp.status == 200:
+                    return
+                if attempt == max_retries or resp.status not in (502, 503, 504):
+                    raise SystemExit(f"Error: health check HTTP {resp.status}: {body}")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if attempt == max_retries or exc.code not in (502, 503, 504):
+                raise SystemExit(f"Error: health check HTTP {exc.code}: {body}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt == max_retries:
+                raise SystemExit(f"Error: health check network error: {exc}") from exc
+        import time
+        time.sleep(retry_delay)
 
 
 def strands_chat(api_url: str, key: str, model: str, prompt: str, max_tokens: int, temperature: float) -> str:

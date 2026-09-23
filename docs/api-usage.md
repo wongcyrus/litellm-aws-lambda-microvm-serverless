@@ -106,7 +106,61 @@ After creating IAM mapping with `create-iam-key-mapping.sh`, call:
 
 using SigV4 IAM auth.
 
-## 7) Common failures
+## 7) Client retry configuration (for seamless cold starts)
+
+When the stack is cold (idle > 15m), the first request may return HTTP 502 at 29s while Aurora Serverless v2 (0 ACU) and the MicroVM wake up (~34s total). Standard clients with retry enabled catch the 502 and succeed automatically on the second attempt:
+
+### OpenAI Python SDK (Default behavior)
+The official `openai` SDK has `max_retries=2` enabled by default:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url=f"{PUBLIC_API_URL}/v1",
+    api_key=USER_KEY,
+    default_headers={"x-api-key": API_GATEWAY_KEY},
+    max_retries=2,  # Automatically retries on 502/503/504
+)
+
+response = client.chat.completions.create(
+    model="nova-2-lite",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)
+```
+
+### Python Requests with urllib3 Retry
+
+```python
+import requests
+from urllib3.util import Retry
+from requests.adapters import HTTPAdapter
+
+session = requests.Session()
+retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+session.mount("https://", HTTPAdapter(max_retries=retries))
+
+resp = session.post(
+    f"{PUBLIC_API_URL}/chat/completions",
+    headers={"x-api-key": API_GATEWAY_KEY, "Authorization": f"Bearer {USER_KEY}"},
+    json={"model": "nova-2-lite", "messages": [{"role": "user", "content": "Hello!"}]},
+    timeout=35,
+)
+print(resp.json())
+```
+
+### cURL CLI
+
+```bash
+curl --retry 2 --retry-delay 2 --retry-connrefused -sS -X POST "${PUBLIC_API_URL%/}/chat/completions" \
+  -H "x-api-key: $API_GATEWAY_KEY" \
+  -H "Authorization: Bearer $USER_KEY" \
+  -H "Content-Type: application/json" \
+  --data-raw '{"model": "nova-2-lite", "messages": [{"role":"user","content":"hello"}]}'
+```
+
+## 8) Common failures
 
 | Symptom | Typical cause |
 |---|---|
@@ -116,3 +170,5 @@ using SigV4 IAM auth.
 | `no healthy deployments` | Model/provider config not healthy or not loaded |
 | `503 no_db_connection` | LiteLLM DB path unavailable |
 | `Token authentication failed` | Stale proxy token vs replaced MicroVM (proxy cache mismatch) |
+| `502 Bad Gateway` on cold start | Cold boot took 34s; client did not retry. Enable client retry (`max_retries >= 2`). |
+

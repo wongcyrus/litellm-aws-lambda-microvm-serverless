@@ -106,11 +106,19 @@ def normalize_base_url_for_iam(api_url: str) -> str:
     return f"{base}/iam"
 
 
-def health_check(iam_base_url: str, auth: ExecuteApiSigV4Auth) -> None:
-    with httpx.Client(auth=auth, timeout=30.0) as client:
-        response = client.get(f"{iam_base_url}/health/liveliness", headers={"accept": "application/json"})
-    if response.status_code != 200:
-        raise SystemExit(f"Error: IAM health check HTTP {response.status_code}: {response.text}")
+def health_check(iam_base_url: str, auth: ExecuteApiSigV4Auth, max_retries: int = 3, retry_delay: float = 3.0) -> None:
+    for attempt in range(1, max_retries + 1):
+        try:
+            with httpx.Client(auth=auth, timeout=30.0) as client:
+                response = client.get(f"{iam_base_url}/health/liveliness", headers={"accept": "application/json"})
+            if response.status_code == 200:
+                return
+            if attempt == max_retries or response.status_code not in (502, 503, 504):
+                raise SystemExit(f"Error: IAM health check HTTP {response.status_code}: {response.text}")
+        except httpx.HTTPError as exc:
+            if attempt == max_retries:
+                raise SystemExit(f"Error: IAM health check HTTP error: {exc}") from exc
+        time.sleep(retry_delay)
 
 
 def strands_chat(

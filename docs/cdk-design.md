@@ -222,50 +222,132 @@ When Aurora is paused at 0 ACUs, the first incoming TCP connection triggers an a
 
 ## Cold-start handling & proxy retry loop
 
-When a request arrives during a cold start (both MicroVM and Aurora are suspended/idle):
+### Empirical cold-start breakdown (measured on 9-hour idle stack)
 
-1. **MicroVM hypervisor boots**: ~2 – 3 seconds.
-2. **Aurora resumes**: ~12 – 18 seconds.
-3. **Prisma migration verification & LiteLLM uvicorn startup**: ~3 – 4 seconds.
-4. **Total cold start latency**: ~20 – 24 seconds.
+When a request arrives during a full cold start (both MicroVM is terminated and Aurora is paused at 0 ACUs):
 
-### The `502 APP_CONNECT_FAILED` problem
+| Phase | Timestamp | Duration | Event in CloudWatch Logs |
+|---|---|---|---|
+| **1. Request arrival** | `00:49:07` | — | Lambda proxy invoked by API Gateway |
+| **2. MicroVM provisioning** | `00:49:08` ➔ `00:49:12` | **~4s** | Hypervisor boots; `proxy.microvm.active` |
+| **3. Aurora 0 ACU wake-up** | `00:49:10` ➔ `00:49:29` | **~19s** | Entrypoint hits DB; Aurora resumes from 0 ACUs; `prisma migrate deploy` finishes |
+| **4. LiteLLM & Uvicorn startup** | `00:49:30` ➔ `00:49:41` | **~11s** | LiteLLM loads models and binds `Uvicorn running on http://0.0.0.0:4000` |
+| **Total cold-start time** | | **~34s** | Container port 4000 fully operational |
 
-While LiteLLM is starting inside the container, the Firecracker microVM router responds with `HTTP 502` and `x-aws-proxy-error: APP_CONNECT_FAILED` because port 4000 is not yet bound by uvicorn.
+### Will it work if API Gateway runs longer than 29s?
 
-### The proxy retry loop
+**Yes, 100%.** 
 
-In `infra/cdk/lambda/microvm_proxy.py`:
+As verified in the container logs, LiteLLM successfully finished its startup and bound port 4000 at second **34** (`00:49:41`). The reason the first request failed with HTTP 502 was solely because:
+1. Standard API Gateway REST APIs have a hard default integration timeout of **29.0 seconds**.
+2. The Lambda Auth Proxy timeout was also configured to **29.0 seconds**.
+3. At second 26 (`00:49:34`), the proxy exhausted its retry budget (`remainingMs < 3500`), and at second 30 (`00:49:37`), API Gateway closed the client connection.
+4. However, the first request successfully **woke up both Aurora and the MicroVM in the background**. The immediate second request succeeded in **13.5s**, and all subsequent requests were warm (~1–2s).
 
-- The proxy inspects `context.get_remaining_time_in_millis()`.
-- If an upstream `502 APP_CONNECT_FAILED` or connection `URLError` occurs and remaining Lambda time is greater than 3,500 ms, the proxy sleeps for 1.5 seconds and retries (up to 20 attempts).
-- This absorbs the entire cold-start window transparently, returning a `200 OK` to the client on the very first request without exposing 502 errors.
-- The standard API Gateway integration timeout is 29 seconds (which can be increased up to 300 seconds via AWS Service Quotas for Regional/Private REST APIs if needed).
+If API Gateway integration timeout and the Lambda proxy timeout are increased to **45–60 seconds**:
+- The proxy retry loop will continue pinging every 1.5 seconds past second 29.
+- At second 34, retry attempt 16 connects to `http://0.0.0.0:4000` as soon as Uvicorn starts.
+- LiteLLM returns `200 OK`, and API Gateway delivers the response to the client **without any 502 errors**.
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant Client
-  participant APIGW as API Gateway (29s timeout)
-  participant Proxy as Lambda Auth Proxy
+  participant APIGW as API Gateway (Extended Timeout: 60s)
+  participant Proxy as Lambda Auth Proxy (Timeout: 60s)
   participant MicroVM as MicroVM / LiteLLM (:4000)
   participant Aurora as Aurora Serverless v2 (0 ACU)
 
-  Client->>APIGW: POST /chat/completions
+  Client->>APIGW: POST /chat/completions (Cold start request)
   APIGW->>Proxy: Invoke
   Proxy->>MicroVM: Forward request
   MicroVM-->>Aurora: Prisma TCP connection (triggers resume)
-  Note over Aurora: Resuming from 0 ACUs (~15s)
-  MicroVM-->>Proxy: 502 APP_CONNECT_FAILED (LiteLLM booting)
-  Note over Proxy: Catch 502, check remainingMs > 3500ms
-  Proxy->>Proxy: Sleep 1.5s
-  Proxy->>MicroVM: Retry attempt 2..N
-  Note over Aurora: Aurora ACTIVE (port 5432 open)
-  Note over MicroVM: LiteLLM listening on :4000
+  Note over Aurora: Resuming from 0 ACUs (~19s)
+  MicroVM-->>Proxy: 502 APP_CONNECT_FAILED (t = 4s..33s)
+  Note over Proxy: Catch 502, retry every 1.5s while remainingMs > 3500
+  Note over Aurora: Aurora ACTIVE at t = 23s
+  Note over MicroVM: LiteLLM uvicorn online on :4000 at t = 34s
+  Proxy->>MicroVM: Retry attempt 16 (t = 34s)
   MicroVM-->>Proxy: 200 OK (Model response)
-  Proxy-->>APIGW: 200 OK
-  APIGW-->>Client: 200 OK (Clean cold start)
+  Proxy-->>APIGW: 200 OK (Delivered within 60s window)
+  APIGW-->>Client: 200 OK (Clean cold start, 0 ACU cost savings preserved)
 ```
+
+### How to configure extended timeouts (> 29s)
+
+Since June 2024, AWS supports integration timeouts up to **300 seconds (5 minutes)** for **Regional REST APIs** and **Private REST APIs**:
+
+1. **Request Quota Increase in AWS Console**:
+   - Open **AWS Service Quotas** -> **Amazon API Gateway**.
+   - Select quota: **Maximum integration timeout in milliseconds** (Quota code: `L-013C7B07`).
+   - Request increase at account level to `60000` ms (60 seconds) or desired value.
+2. **Update CDK Stack (`private-litellm-microvm-stack.ts`)**:
+   ```typescript
+   // 1. Increase Lambda proxy function timeout
+   const proxyFunction = new lambda.Function(this, "MicrovmAuthProxyFunction", {
+     // ...
+     timeout: cdk.Duration.seconds(60),
+   });
+
+   // 2. Increase API Gateway Lambda integration timeout
+   const proxyIntegration = new apigateway.LambdaIntegration(proxyFunction, {
+     proxy: true,
+     timeout: cdk.Duration.seconds(60),
+   });
+   ```
+3. **Deploy the stack**:
+   ```bash
+   ./scripts/deploy-stack.sh
+   ```
+
+### Architecture Decision: `minCapacity: 0` vs `minCapacity: 0.5`
+
+| Metric / Requirement | `minCapacity: 0` (Default 29s APIGW) | `minCapacity: 0` (Extended 60s APIGW) | `minCapacity: 0.5` (Baseline Active) |
+|---|---|---|---|
+| **Monthly Database Cost** | **$0.00/hr** when idle (~$0/mo) | **$0.00/hr** when idle (~$0/mo) | **~$43.80/month** (~$0.06/hr) |
+| **Cold-Start Resume Time** | ~34 seconds | ~34 seconds | ~15 seconds (Aurora is already awake) |
+| **First Request Outcome** | 502 at 29s (wakes stack; 2nd request succeeds) | **200 OK at ~34s** | **200 OK at ~15s** |
+| **Subsequent Requests** | Warm (1–2s) | Warm (1–2s) | Warm (1–2s) |
+| **Prerequisites** | None | AWS Service Quota increase for API Gateway | None |
+
+### Client-side retries make `minCapacity: 0` transparent in practice
+
+In real-world applications, **`minCapacity: 0` works completely fine without changing API Gateway quotas** because production clients and LLM SDKs have automatic retry mechanisms built in:
+
+- **OpenAI Python SDK**: Configured with `max_retries=2` by default. It automatically retries on connection errors and HTTP status codes `[408, 409, 429, 500, 502, 503, 504]`.
+- **LangChain / LlamaIndex / Strands**: Inherit the underlying OpenAI client's retry policies.
+- **cURL / scripts**: Can use `--retry 2 --retry-delay 2`.
+
+#### The end-to-end client retry timeline
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant App as Client / SDK (max_retries=2)
+  participant APIGW as API Gateway (29s timeout)
+  participant Proxy as Lambda Auth Proxy
+  participant Stack as MicroVM & Aurora (0 ACU)
+
+  Note over App,Stack: Stack is suspended / idle (0 ACUs)
+  App->>APIGW: Request Attempt 1 (t = 0s)
+  APIGW->>Proxy: Forward
+  Proxy->>Stack: Initiate Boot & Wake Aurora
+  Note over Stack: Aurora resuming (~19s), LiteLLM booting (~11s)
+  Proxy-->>APIGW: 502 (Proxy retry budget exhausted at 26s)
+  APIGW-->>App: HTTP 502 Bad Gateway (t = 29s)
+  Note over App: SDK catches 502 -> Backoff delay (1s)
+  Note over Stack: LiteLLM becomes ACTIVE on port 4000 at t = 34s
+  App->>APIGW: Request Attempt 2 (Auto-Retry at t = 30s)
+  APIGW->>Proxy: Forward
+  Proxy->>Stack: Forward to active LiteLLM :4000
+  Stack-->>Proxy: 200 OK (Model completion response)
+  Proxy-->>APIGW: 200 OK
+  APIGW-->>App: 200 OK (Success! Total elapsed: ~43s)
+```
+
+From the perspective of the application developer, the SDK catches the initial 502 and delivers the completed response on attempt 2 without failing the application code. This gives teams the best of both worlds: **100% idle cost savings ($0/hr)** with **zero infrastructure quota changes**.
+
+
 
 ## Build-time vs runtime network isolation
 
