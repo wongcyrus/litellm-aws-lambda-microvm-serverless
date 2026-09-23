@@ -18,6 +18,7 @@ type CdkSettings = {
   microvmContainerBaseImage?: string;
   useCodebuildEcrBaseImage?: boolean;
   publicMicrovm?: boolean;
+  apiIntegrationTimeoutSeconds?: number;
 };
 
 type AzureOpenAiConfig = {
@@ -39,6 +40,12 @@ function parseBoolean(value: unknown, fieldName: string): boolean {
     if (lowered === "false") return false;
   }
   throw new Error(`${fieldName} must be a boolean (true/false).`);
+}
+
+function parsePositiveInteger(value: unknown, fieldName: string): number {
+  const num = Number(value);
+  if (Number.isInteger(num) && num > 0) return num;
+  throw new Error(`${fieldName} must be a positive integer.`);
 }
 
 function asOptionalString(value: unknown): string | undefined {
@@ -224,6 +231,13 @@ const useCodebuildEcrBaseImage =
 const publicMicrovmContext = app.node.tryGetContext("publicMicrovm");
 const publicMicrovm =
   publicMicrovmContext !== undefined ? parseBoolean(publicMicrovmContext, "publicMicrovm") : settings.publicMicrovm ?? true;
+const apiIntegrationTimeoutSecondsContext = app.node.tryGetContext("apiIntegrationTimeoutSeconds");
+const apiIntegrationTimeoutSeconds =
+  apiIntegrationTimeoutSecondsContext !== undefined
+    ? parsePositiveInteger(apiIntegrationTimeoutSecondsContext, "apiIntegrationTimeoutSeconds")
+    : settings.apiIntegrationTimeoutSeconds !== undefined
+      ? parsePositiveInteger(settings.apiIntegrationTimeoutSeconds, "apiIntegrationTimeoutSeconds")
+      : 29;
 const readinessCheckNonce = new Date().toISOString();
 const internetEgressConnectorArn = `arn:aws:lambda:${microvmRegion}:aws:network-connector:aws-network-connector:INTERNET_EGRESS`;
 
@@ -256,5 +270,6 @@ new PrivateLiteLlmMicrovmStack(app, "PrivateLiteLlmMicrovmStack", {
   microvmContainerBaseImage: microvmContainerBaseImage ? String(microvmContainerBaseImage) : undefined,
   useCodebuildEcrBaseImage,
   readinessCheckNonce,
-  publicMicrovm
+  publicMicrovm,
+  apiIntegrationTimeoutSeconds
 });

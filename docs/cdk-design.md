@@ -279,22 +279,19 @@ Since June 2024, AWS supports integration timeouts up to **300 seconds (5 minute
 
 1. **Request Quota Increase in AWS Console**:
    - Open **AWS Service Quotas** -> **Amazon API Gateway**.
-   - Select quota: **Maximum integration timeout in milliseconds** (Quota code: `L-013C7B07`).
+   - Select quota: **Maximum integration timeout in milliseconds** (Quota code: `L-E5AE38E3`).
    - Request increase at account level to `60000` ms (60 seconds) or desired value.
-2. **Update CDK Stack (`private-litellm-microvm-stack.ts`)**:
-   ```typescript
-   // 1. Increase Lambda proxy function timeout
-   const proxyFunction = new lambda.Function(this, "MicrovmAuthProxyFunction", {
-     // ...
-     timeout: cdk.Duration.seconds(60),
-   });
-
-   // 2. Increase API Gateway Lambda integration timeout
-   const proxyIntegration = new apigateway.LambdaIntegration(proxyFunction, {
-     proxy: true,
-     timeout: cdk.Duration.seconds(60),
-   });
+2. **Configure `apiIntegrationTimeoutSeconds: 60` in `cdk-settings.yaml`**:
+   ```yaml
+   # infra/cdk/cdk-settings.yaml
+   apiIntegrationTimeoutSeconds: 60
    ```
+   Or pass as a CLI context parameter:
+   ```bash
+   npx cdk deploy -c apiIntegrationTimeoutSeconds=60
+   ```
+   When omitted, the stack defaults to **29 seconds** to maintain out-of-the-box compatibility with standard AWS accounts.
+
 3. **Deploy the stack**:
    ```bash
    ./scripts/deploy-stack.sh

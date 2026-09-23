@@ -64,3 +64,51 @@ test("synthesizes PrivateLiteLlmMicrovmStack with Azure and Vertex providers and
   template.resourceCountIs("AWS::CodeBuild::Project", 1);
   template.resourceCountIs("AWS::ECR::Repository", 1);
 });
+
+test("defaults apiIntegrationTimeoutSeconds to 29s when omitted", () => {
+  const app = new cdk.App();
+  const stack = new PrivateLiteLlmMicrovmStack(app, "TestStackDefaultTimeout", {
+    env: { account: "123456789012", region: "us-east-1" },
+    microvmRegion: "us-east-1",
+    useCodebuildEcrBaseImage: false,
+    readinessCheckNonce: "nonce-def",
+    publicMicrovm: true,
+  });
+
+  const template = Template.fromStack(stack);
+  template.hasResourceProperties("AWS::Lambda::Function", {
+    Handler: "microvm_proxy.handler",
+    Timeout: 29,
+  });
+  template.hasResourceProperties("AWS::ApiGateway::Method", {
+    HttpMethod: "ANY",
+    Integration: {
+      TimeoutInMillis: 29000,
+    },
+  });
+});
+
+test("applies custom apiIntegrationTimeoutSeconds (e.g. 60s)", () => {
+  const app = new cdk.App();
+  const stack = new PrivateLiteLlmMicrovmStack(app, "TestStackCustomTimeout", {
+    env: { account: "123456789012", region: "us-east-1" },
+    microvmRegion: "us-east-1",
+    useCodebuildEcrBaseImage: false,
+    readinessCheckNonce: "nonce-custom",
+    publicMicrovm: true,
+    apiIntegrationTimeoutSeconds: 60,
+  });
+
+  const template = Template.fromStack(stack);
+  template.hasResourceProperties("AWS::Lambda::Function", {
+    Handler: "microvm_proxy.handler",
+    Timeout: 60,
+  });
+  template.hasResourceProperties("AWS::ApiGateway::Method", {
+    HttpMethod: "ANY",
+    Integration: {
+      TimeoutInMillis: 60000,
+    },
+  });
+});
+

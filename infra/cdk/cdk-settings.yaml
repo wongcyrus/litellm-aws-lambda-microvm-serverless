@@ -5,3 +5,7 @@ vertexCredentialsFile: .keys/gcp-sp.json
 azureOpenAiConfigFile: .keys/azure-openai.json
 publicMicrovm: true
 useCodebuildEcrBaseImage: false
+
+# API Gateway & Lambda integration timeout in seconds (default is 29).
+# Values > 29 require an approved AWS Service Quotas increase for Amazon API Gateway (Quota code: L-E5AE38E3).
+apiIntegrationTimeoutSeconds: 60

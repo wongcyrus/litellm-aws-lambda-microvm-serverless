@@ -14,6 +14,9 @@ microvmRegion: us-east-1
 # azureOpenAiConfigFile: /absolute/path/to/azure-openai.json
 publicMicrovm: true
 useCodebuildEcrBaseImage: false
+# Optional: API Gateway & Lambda integration timeout in seconds (default is 29).
+# Values > 29 require an approved AWS Service Quotas increase for Amazon API Gateway.
+# apiIntegrationTimeoutSeconds: 60
 ```
 
 Optional env-based paths:

@@ -460,7 +460,7 @@ def _forward_to_microvm(event: dict, context: Any = None) -> dict:
             request_body = body.encode("utf-8")
 
     retry_count = 0
-    max_retries = 20
+    max_retries = 35
 
     while True:
         request = urllib.request.Request(
@@ -473,7 +473,7 @@ def _forward_to_microvm(event: dict, context: Any = None) -> dict:
         remaining_ms = (
             context.get_remaining_time_in_millis()
             if context and hasattr(context, "get_remaining_time_in_millis")
-            else 28000
+            else 58000
         )
         attempt_timeout = max(2.0, min(15.0, (remaining_ms - 2000) / 1000.0))
 

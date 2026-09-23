@@ -37,6 +37,7 @@ export interface PrivateLiteLlmMicrovmStackProps extends cdk.StackProps {
   useCodebuildEcrBaseImage: boolean;
   readinessCheckNonce: string;
   publicMicrovm: boolean;
+  apiIntegrationTimeoutSeconds?: number;
 }
 
 export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
@@ -203,11 +204,12 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: cdk.RemovalPolicy.DESTROY
     });
+    const apiIntegrationTimeoutSeconds = props.apiIntegrationTimeoutSeconds ?? 29;
     const proxyFunction = new lambda.Function(this, "MicrovmAuthProxyFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
       handler: "microvm_proxy.handler",
       code: lambda.Code.fromAsset(resolveAssetDir("lambda")),
-      timeout: cdk.Duration.seconds(29),
+      timeout: cdk.Duration.seconds(apiIntegrationTimeoutSeconds),
       memorySize: 256,
       logGroup: proxyLogGroup,
       environment: {
@@ -299,7 +301,10 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
       apiKeySourceType: apigateway.ApiKeySourceType.HEADER,
       binaryMediaTypes: ["*/*"]
     });
-    const proxyIntegration = new apigateway.LambdaIntegration(proxyFunction, { proxy: true });
+    const proxyIntegration = new apigateway.LambdaIntegration(proxyFunction, {
+      proxy: true,
+      timeout: cdk.Duration.seconds(apiIntegrationTimeoutSeconds),
+    });
     const methodOptions: apigateway.MethodOptions = { apiKeyRequired: true };
     api.root.addMethod("ANY", proxyIntegration, methodOptions);
     const greedyProxy = api.root.addResource("{proxy+}");
