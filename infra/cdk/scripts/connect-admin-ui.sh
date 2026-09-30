@@ -8,6 +8,8 @@ MICROVM_PORT="${MICROVM_PORT:-4000}"
 TOKEN_MINUTES="${TOKEN_MINUTES:-60}"
 START_IF_NEEDED=true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CDK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV_DIR="${VENV_DIR:-$CDK_DIR/.venv-strands}"
 MODEL_PATH="$(cd "$SCRIPT_DIR/../lambda/botocore_data" && pwd)"
 MASTER_KEY_FILE="${MASTER_KEY_FILE:-$SCRIPT_DIR/../.keys/admin-master-key.txt}"
 
@@ -72,26 +74,41 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-MICROVM_IMAGE_IDENTIFIER="$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='MicrovmImageRef'].OutputValue" \
-  --output text)"
-MICROVM_EXECUTION_ROLE_ARN="$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='MicrovmExecutionRoleArn'].OutputValue" \
-  --output text)"
-MASTER_KEY_SECRET_ARN="$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='LiteLlmMasterKeySecretArn'].OutputValue" \
-  --output text)"
-PROXY_FUNCTION_NAME="$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='MicrovmAuthProxyFunctionName'].OutputValue" \
-  --output text 2>/dev/null || true)"
+OUTPUTS_FILE="${OUTPUTS_FILE:-$CDK_DIR/output.json}"
+
+resolve_output() {
+  local key="$1"
+  local val=""
+  if [[ -f "$OUTPUTS_FILE" ]]; then
+    val="$(python3 - <<'PY' "$OUTPUTS_FILE" "$STACK_NAME" "$key" 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    stack_data = data.get(sys.argv[2], {})
+    val = stack_data.get(sys.argv[3])
+    if val and val != "None":
+        print(val)
+except Exception:
+    pass
+PY
+)"
+  fi
+  if [[ -z "$val" || "$val" == "None" ]]; then
+    val="$(aws cloudformation describe-stacks \
+      --stack-name "$STACK_NAME" \
+      --region "$AWS_REGION" \
+      --query "Stacks[0].Outputs[?OutputKey=='${key}'].OutputValue" \
+      --output text 2>/dev/null || true)"
+  fi
+  printf '%s' "$val"
+}
+
+MICROVM_IMAGE_IDENTIFIER="$(resolve_output "MicrovmImageRef")"
+MICROVM_EXECUTION_ROLE_ARN="$(resolve_output "MicrovmExecutionRoleArn")"
+MASTER_KEY_SECRET_ARN="$(resolve_output "LiteLlmMasterKeySecretArn")"
+PROXY_FUNCTION_NAME="$(resolve_output "MicrovmAuthProxyFunctionName")"
+
 if [[ -z "$PROXY_FUNCTION_NAME" || "$PROXY_FUNCTION_NAME" == "None" ]]; then
   PROXY_FUNCTION_NAME="$(aws cloudformation describe-stack-resource \
     --stack-name "$STACK_NAME" \
@@ -101,11 +118,7 @@ if [[ -z "$PROXY_FUNCTION_NAME" || "$PROXY_FUNCTION_NAME" == "None" ]]; then
     --output text 2>/dev/null || true)"
 fi
 
-MICROVM_EGRESS_CONNECTOR_ARN="$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='MicrovmEgressConnectorArn'].OutputValue" \
-  --output text 2>/dev/null || true)"
+MICROVM_EGRESS_CONNECTOR_ARN="$(resolve_output "MicrovmEgressConnectorArn")"
 if [[ -z "$MICROVM_EGRESS_CONNECTOR_ARN" || "$MICROVM_EGRESS_CONNECTOR_ARN" == "None" ]]; then
   if [[ -n "$PROXY_FUNCTION_NAME" && "$PROXY_FUNCTION_NAME" != "None" ]]; then
     MICROVM_EGRESS_CONNECTOR_ARN="$(aws lambda get-function-configuration \
@@ -154,7 +167,18 @@ mkdir -p "$(dirname "$MASTER_KEY_FILE")"
 printf '%s\n' "$MASTER_KEY" > "$MASTER_KEY_FILE"
 chmod 600 "$MASTER_KEY_FILE"
 
-python3 - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH" "$MASTER_KEY_FILE"
+PYTHON_BIN="python3"
+if [[ -x "$VENV_DIR/bin/python" ]]; then
+  PYTHON_BIN="$VENV_DIR/bin/python"
+elif ! python3 -c "import boto3" >/dev/null 2>&1; then
+  if [[ ! -d "$VENV_DIR" ]]; then
+    python3 -m venv "$VENV_DIR"
+  fi
+  "$VENV_DIR/bin/pip" install --quiet boto3
+  PYTHON_BIN="$VENV_DIR/bin/python"
+fi
+
+"$PYTHON_BIN" -u - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH" "$MASTER_KEY_FILE"
 import http.server
 import os
 import sys
