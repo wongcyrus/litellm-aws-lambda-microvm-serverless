@@ -114,7 +114,7 @@ if [[ -z "$ROLE_ARN" || -z "$API_URL" ]]; then
     exit 1
   fi
 
-  RESOLVED_VALUES="$(python - <<'PY' "$OUTPUTS_FILE" "$STACK_NAME"
+  RESOLVED_VALUES="$(python3 - <<'PY' "$OUTPUTS_FILE" "$STACK_NAME"
 import json
 import sys
 
@@ -164,17 +164,17 @@ ASSUME_JSON="$(aws sts assume-role \
   --query Credentials \
   --output json)"
 
-TEMP_ACCESS_KEY_ID="$(python - <<'PY' "$ASSUME_JSON"
+TEMP_ACCESS_KEY_ID="$(python3 - <<'PY' "$ASSUME_JSON"
 import json,sys
 print(json.loads(sys.argv[1])["AccessKeyId"])
 PY
 )"
-TEMP_SECRET_ACCESS_KEY="$(python - <<'PY' "$ASSUME_JSON"
+TEMP_SECRET_ACCESS_KEY="$(python3 - <<'PY' "$ASSUME_JSON"
 import json,sys
 print(json.loads(sys.argv[1])["SecretAccessKey"])
 PY
 )"
-TEMP_SESSION_TOKEN="$(python - <<'PY' "$ASSUME_JSON"
+TEMP_SESSION_TOKEN="$(python3 - <<'PY' "$ASSUME_JSON"
 import json,sys
 print(json.loads(sys.argv[1])["SessionToken"])
 PY

@@ -9,18 +9,30 @@ Every normal request must pass both:
 
 `LITELLM_MASTER_KEY` is for admin operations (for example `/key/generate`), not for client inference traffic.
 
-## Create a non-admin app key
+## Create a non-admin client key
 
 Use:
 
-- `infra/cdk/scripts/create-api-key.sh`
+- `scripts/create-client-key.sh` (or `infra/cdk/scripts/create-client-key.sh`)
 
 Key features:
 
-- Registers the same key value in LiteLLM + API Gateway usage plan
-- Supports budget limits and key type
+- Automatically resolves the public client usage plan (`AwsGatewayUsagePlanId`) and API endpoint (`PublicApiInvokeUrl`)
+- Strictly enforces non-admin key type (`llm_api`), prohibiting admin/management route access
+- Registers the same key in both LiteLLM and API Gateway's public usage plan
+- Displays the client endpoint, key, and client code snippets upon completion
 
 Example (LLM-only key, US$10 daily cap):
+
+```bash
+./scripts/create-client-key.sh \
+  --alias app-user \
+  --max-budget 10 \
+  --budget-duration 1d \
+  --output-file .keys/user-key.txt
+```
+
+Alternatively, use the lower-level `infra/cdk/scripts/create-api-key.sh` if you need to manually target custom usage plans:
 
 ```bash
 cd infra/cdk

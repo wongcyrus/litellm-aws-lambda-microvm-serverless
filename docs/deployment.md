@@ -77,6 +77,24 @@ Deploys `PrivateLiteLlmMicrovmStack` and writes stack outputs JSON.
 | `--output-file` | no | Output JSON path under `infra/cdk` (`default: output.json`) |
 | `--stack` | no | Stack name override |
 
+### `scripts/create-client-key.sh`
+
+Generates a non-admin client API key (`key_type: llm_api`) and registers it in the API Gateway public usage plan. Auto-resolves stack outputs.
+
+| Flag | Required | Description |
+|---|---|---|
+| `--alias` | no | Key alias in LiteLLM (`default: client-<timestamp>`) |
+| `--duration` | no | Key duration (`7d`, `30d`; omit for non-expiring key) |
+| `--models` | no | Comma-separated model allowlist (omit to allow all models) |
+| `--max-budget` | no | USD budget limit |
+| `--budget-duration` | no | Budget window (`1d`, `7d`, `30d`) |
+| `--output-file` | no | Output key file path (`default: .keys/<alias>.txt`) |
+| `--usage-plan-id` | no | Usage plan ID override (defaults to auto-resolved `AwsGatewayUsagePlanId`) |
+| `--json` | no | Print result in JSON format |
+| `-q`, `--quiet` | no | Print only the generated key string |
+| `--stack` | no | Stack name override (`default: PrivateLiteLlmMicrovmStack`) |
+| `--region` | no | Region override (`default: us-east-1`) |
+
 ### `scripts/create-api-key.sh`
 
 Generates one LiteLLM key and registers the same value in API Gateway usage plan.

@@ -148,7 +148,7 @@ Two-layer auth is intentional:
 1. API Gateway layer: `x-api-key`
 2. LiteLLM layer: request key in `Authorization` header
 
-`LITELLM_MASTER_KEY` is admin-only (key generation/admin operations), not a client request key.
+`LITELLM_MASTER_KEY` is admin-only (key generation/admin operations), not a client request key. Client keys are generated with `key_type: llm_api` (via `scripts/create-client-key.sh`) and attached to the public usage plan, allowing only inference routes (e.g. `/chat/completions`) and blocking admin/management operations.
 
 ## DynamoDB design
 

@@ -19,6 +19,7 @@ This page is a fast index for navigating the docs set.
 |---|---|
 | Mode comparison (security + cost) | `docs/cdk-design.md` |
 | Deploy script flags | `docs/deployment.md` |
+| Client API key script flags | `docs/deployment.md` |
 | API key script flags | `docs/deployment.md` |
 | Vertex service account script flags | `docs/deployment.md` |
 | Admin UI connect script flags | `docs/deployment.md` |

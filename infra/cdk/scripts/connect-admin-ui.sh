@@ -134,7 +134,7 @@ if [[ -z "$MICROVM_EGRESS_CONNECTOR_ARN" || "$MICROVM_EGRESS_CONNECTOR_ARN" == "
 fi
 
 MASTER_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$MASTER_KEY_SECRET_ARN" --query SecretString --output text)"
-MASTER_KEY="$(python - <<'PY' "$MASTER_KEY_JSON"
+MASTER_KEY="$(python3 - <<'PY' "$MASTER_KEY_JSON"
 import json
 import sys
 obj = json.loads(sys.argv[1])
@@ -154,7 +154,7 @@ mkdir -p "$(dirname "$MASTER_KEY_FILE")"
 printf '%s\n' "$MASTER_KEY" > "$MASTER_KEY_FILE"
 chmod 600 "$MASTER_KEY_FILE"
 
-python - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH" "$MASTER_KEY_FILE"
+python3 - <<'PY' "$AWS_REGION" "$MICROVM_IMAGE_IDENTIFIER" "$MICROVM_EXECUTION_ROLE_ARN" "$MICROVM_EGRESS_CONNECTOR_ARN" "$MICROVM_PORT" "$TOKEN_MINUTES" "$LISTEN_PORT" "$START_IF_NEEDED" "$MODEL_PATH" "$MASTER_KEY_FILE"
 import http.server
 import os
 import sys

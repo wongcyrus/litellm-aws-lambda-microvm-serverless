@@ -118,14 +118,14 @@ if [[ -z "$MASTER_KEY_SECRET_ARN" || "$MASTER_KEY_SECRET_ARN" == "None" ]]; then
 fi
 
 API_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$API_KEY_SECRET_ARN" --query SecretString --output text)"
-API_GATEWAY_STACK_KEY="$(python - <<'PY' "$API_KEY_JSON"
+API_GATEWAY_STACK_KEY="$(python3 - <<'PY' "$API_KEY_JSON"
 import json
 import sys
 print(json.loads(sys.argv[1])["apiKey"])
 PY
 )"
 MASTER_KEY_JSON="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$MASTER_KEY_SECRET_ARN" --query SecretString --output text)"
-MASTER_KEY="$(python - <<'PY' "$MASTER_KEY_JSON"
+MASTER_KEY="$(python3 - <<'PY' "$MASTER_KEY_JSON"
 import json
 import sys
 obj = json.loads(sys.argv[1])
@@ -143,7 +143,7 @@ if [[ -z "$API_GATEWAY_STACK_KEY" || -z "$MASTER_KEY" ]]; then
 fi
 
 # 1) Revoke LiteLLM key first.
-DELETE_BODY="$(python - <<'PY' "$KEY_VALUE"
+DELETE_BODY="$(python3 - <<'PY' "$KEY_VALUE"
 import json
 import sys
 print(json.dumps({"keys": [sys.argv[1]]}))
@@ -201,7 +201,7 @@ if [[ "$SKIP_IAM_MAPPING_DELETE" == false ]]; then
 fi
 
 if [[ "$PRINT_JSON" == true ]]; then
-  python - <<'PY' "$KEY_VALUE" "$API_GATEWAY_KEY_ID" "$REMOVED_IAM_MAPPING_COUNT" "$SKIP_IAM_MAPPING_DELETE"
+  python3 - <<'PY' "$KEY_VALUE" "$API_GATEWAY_KEY_ID" "$REMOVED_IAM_MAPPING_COUNT" "$SKIP_IAM_MAPPING_DELETE"
 import json
 import sys
 print(json.dumps({

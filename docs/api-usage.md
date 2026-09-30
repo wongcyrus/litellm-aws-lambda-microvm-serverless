@@ -49,24 +49,21 @@ curl -sS "${PUBLIC_API_URL%/}/health/liveliness" \
   -H "Authorization: Bearer $USER_KEY"
 ```
 
-## 3) Create a user key (recommended)
+## 3) Create a client key (recommended)
 
 ```bash
+# From repository root:
+./scripts/create-client-key.sh --alias app-user --duration 7d
+
+# Or from infra/cdk:
 cd infra/cdk
-PUBLIC_PLAN_ID=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" --region "$AWS_REGION" \
-  --query "Stacks[0].Outputs[?OutputKey=='AwsGatewayUsagePlanId'].OutputValue" \
-  --output text)
+./scripts/create-client-key.sh --alias app-user --duration 7d
 
-./scripts/create-api-key.sh \
-  --usage-plan-id "$PUBLIC_PLAN_ID" \
-  --alias app-user \
-  --duration 7d
-
-USER_KEY=$(cat .keys/app-user.txt)
+USER_KEY=$(cat infra/cdk/.keys/app-user.txt)
 ```
 
-Omit `--models` to create a key that can call all models. Add `--models ...` only when you want an explicit allowlist.
+The script automatically queries the public usage plan ID, generates a non-admin client key (`key_type: llm_api`), and outputs the key and endpoint URL.
+Omit `--models` to allow calling all models. Add `--models ...` only when you want an explicit allowlist.
 
 Manual `/key/generate` call (if needed):
 

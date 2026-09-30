@@ -8,7 +8,7 @@ CDK_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_DIR="${VENV_DIR:-$CDK_DIR/.venv-strands}"
 API_URL="${API_URL:-}"
 API_KEY="${API_KEY:-}"
-API_KEY_FILE="${API_KEY_FILE:-$CDK_DIR/.keys/user-key.txt}"
+API_KEY_FILE="${API_KEY_FILE:-}"
 MODEL="${MODEL:-nova-2-lite}"
 PROMPT="${PROMPT:-Write 3 concise sentences about using LiteLLM with Amazon Bedrock in production, and include one practical reliability tip.}"
 MAX_TOKENS="${MAX_TOKENS:-128}"
@@ -85,13 +85,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "$API_KEY" && -n "$API_KEY_FILE" && "$API_KEY_FILE" != ".keys/user-key.txt" ]]; then
+if [[ -n "$API_KEY" && -n "$API_KEY_FILE" ]]; then
   echo "Error: use either --api-key or --api-key-file, not both." >&2
   exit 1
 fi
 if [[ -z "$API_KEY" && -z "$API_KEY_FILE" ]]; then
-  echo "Error: provide --api-key or --api-key-file." >&2
-  exit 1
+  API_KEY_FILE="$CDK_DIR/.keys/user-key.txt"
 fi
 
 if [[ -z "$API_URL" ]]; then

@@ -26,6 +26,7 @@ This stack is built for teams that want a private, serverless LLM gateway with:
 
 - Mode comparison table (security/cost): `docs/cdk-design.md` -> **Mode comparison table (security + cost)**
 - Deploy script flags table: `docs/deployment.md` -> **scripts/deploy-stack.sh**
+- Client API key script flags table: `docs/deployment.md` -> **scripts/create-client-key.sh**
 - API key script flags table: `docs/deployment.md` -> **scripts/create-api-key.sh**
 - Common failures table: `docs/api-usage.md` -> **Common failures**
 - Troubleshooting matrix: `docs/troubleshooting.md` -> **Common failure patterns**
@@ -37,10 +38,16 @@ cd infra/cdk
 ./scripts/deploy-stack.sh --config cdk-settings.yaml --stack PrivateLiteLlmMicrovmStack
 ```
 
-Generate an app key (LLM-only, daily budget):
+Generate a client key (non-admin, LLM inference only):
 
 ```bash
+# From repo root:
+./scripts/create-client-key.sh --alias app-user --max-budget 10 --budget-duration 1d
+
+# Or from infra/cdk:
 cd infra/cdk
-PUBLIC_PLAN_ID=$(aws cloudformation describe-stacks --stack-name PrivateLiteLlmMicrovmStack --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='AwsGatewayUsagePlanId'].OutputValue" --output text)
-./scripts/create-api-key.sh --usage-plan-id "$PUBLIC_PLAN_ID" --alias app-user --max-budget 10 --budget-duration 1d --key-type llm_api --output-file .keys/user-key.txt
+./scripts/create-client-key.sh --alias app-user --max-budget 10 --budget-duration 1d
 ```
+
+The script automatically detects the public usage plan, enforces non-admin key type (`llm_api`), and prints the client key, endpoint, and ready-to-use cURL/OpenAI SDK examples.
+
