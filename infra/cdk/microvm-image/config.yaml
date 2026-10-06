@@ -112,24 +112,10 @@ model_list:
       api_version: "2024-08-01-preview"
       drop_params: true
 
-  # Gemini (Vertex text/chat models)
+  # Gemini Flash (kept to 3.8 and 3.5 series)
   - model_name: gemini-3.8-flash
     litellm_params:
       model: vertex_ai/gemini-3.8-flash
-      vertex_credentials: os.environ/VERTEX_CREDENTIALS
-      vertex_project: os.environ/VERTEXAI_PROJECT
-      vertex_location: global
-
-  - model_name: gemini-3.7-flash
-    litellm_params:
-      model: vertex_ai/gemini-3.7-flash
-      vertex_credentials: os.environ/VERTEX_CREDENTIALS
-      vertex_project: os.environ/VERTEXAI_PROJECT
-      vertex_location: global
-
-  - model_name: gemini-3.6-flash
-    litellm_params:
-      model: vertex_ai/gemini-3.6-flash
       vertex_credentials: os.environ/VERTEX_CREDENTIALS
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: global
@@ -148,16 +134,17 @@ model_list:
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: global
 
-  - model_name: gemini-3.1-flash-lite
+  - model_name: gemini-flash
     litellm_params:
-      model: vertex_ai/gemini-3.1-flash-lite
+      model: vertex_ai/gemini-3.8-flash
       vertex_credentials: os.environ/VERTEX_CREDENTIALS
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: global
 
-  - model_name: gemini-3.1-flash-image
+  # Gemini Pro (Frontier reasoning)
+  - model_name: gemini-pro
     litellm_params:
-      model: vertex_ai/gemini-3.1-flash-image
+      model: vertex_ai/gemini-3.1-pro-preview
       vertex_credentials: os.environ/VERTEX_CREDENTIALS
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: global
@@ -183,16 +170,10 @@ model_list:
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: us-central1
 
-  - model_name: gemini-2.5-flash
+  # Gemini Multimodal / Image
+  - model_name: gemini-3.1-flash-image
     litellm_params:
-      model: vertex_ai/gemini-2.5-flash
+      model: vertex_ai/gemini-3.1-flash-image
       vertex_credentials: os.environ/VERTEX_CREDENTIALS
       vertex_project: os.environ/VERTEXAI_PROJECT
-      vertex_location: us-central1
-
-  - model_name: gemini-2.5-flash-lite
-    litellm_params:
-      model: vertex_ai/gemini-2.5-flash-lite
-      vertex_credentials: os.environ/VERTEX_CREDENTIALS
-      vertex_project: os.environ/VERTEXAI_PROJECT
-      vertex_location: us-central1
+      vertex_location: global

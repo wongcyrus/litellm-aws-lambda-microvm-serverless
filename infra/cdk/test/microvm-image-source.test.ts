@@ -93,31 +93,40 @@ test("parses repo config.yaml and includes updated Vertex AI Gemini models", () 
   };
   assert.ok(Array.isArray(parsed.model_list));
 
-  const expectedModels = [
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3.1-flash-image",
-    "gemini-3.1-pro-preview",
+  const expectedModels: Array<{ model_name: string; vertex_model: string }> = [
+    { model_name: "gemini-3.8-flash", vertex_model: "vertex_ai/gemini-3.8-flash" },
+    { model_name: "gemini-3.5-flash", vertex_model: "vertex_ai/gemini-3.5-flash" },
+    { model_name: "gemini-3.5-flash-lite", vertex_model: "vertex_ai/gemini-3.5-flash-lite" },
+    { model_name: "gemini-flash", vertex_model: "vertex_ai/gemini-3.8-flash" },
+    { model_name: "gemini-pro", vertex_model: "vertex_ai/gemini-3.1-pro-preview" },
+    { model_name: "gemini-3.1-pro-preview", vertex_model: "vertex_ai/gemini-3.1-pro-preview" },
+    { model_name: "gemini-2.5-pro", vertex_model: "vertex_ai/gemini-2.5-pro" },
+    { model_name: "gemini-3.1-flash-image", vertex_model: "vertex_ai/gemini-3.1-flash-image" },
   ];
 
-  for (const modelId of expectedModels) {
-    const found = parsed.model_list.find((m) => m.model_name === modelId);
-    assert.ok(found, `${modelId} must exist in config.yaml`);
-    assert.equal(found.litellm_params.model, `vertex_ai/${modelId}`);
+  for (const exp of expectedModels) {
+    const found = parsed.model_list.find((m) => m.model_name === exp.model_name);
+    assert.ok(found, `${exp.model_name} must exist in config.yaml`);
+    assert.equal(found.litellm_params.model, exp.vertex_model);
   }
 
-  // Ensure shut down preview model was removed
-  const previewImage = parsed.model_list.find((m) => m.model_name === "gemini-3.1-flash-image-preview");
-  assert.ok(!previewImage, "gemini-3.1-flash-image-preview should be removed as it is shut down");
+  // Ensure shut down preview and deprecating 3.6/3.7 models are excluded
+  const excludedModels = [
+    "gemini-3.1-flash-image-preview",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+  ];
+  for (const excluded of excludedModels) {
+    const found = parsed.model_list.find((m) => m.model_name === excluded);
+    assert.ok(!found, `${excluded} should be omitted from config.yaml`);
+  }
 
   // Verify vertex filtering
   const filtered = filterLiteLlmConfigYaml(raw, { enableAzure: false, enableVertex: false });
   const filteredModels = modelIdsFromConfig(filtered);
-  for (const modelId of expectedModels) {
-    assert.ok(!filteredModels.includes(modelId), `${modelId} must be filtered when enableVertex is false`);
+  for (const exp of expectedModels) {
+    assert.ok(!filteredModels.includes(exp.model_name), `${exp.model_name} must be filtered when enableVertex is false`);
   }
 });
