@@ -10,6 +10,8 @@ MODELS=(
   "minimax-m2.5"
   "kimi-k2.5"
   "kimi-k3"
+  "glm-5.3"
+  "glm-5"
 )
 
 for model in "${MODELS[@]}"; do

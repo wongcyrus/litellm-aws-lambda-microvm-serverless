@@ -63,3 +63,23 @@ test("parses repo config.yaml and includes kimi-k3", () => {
   assert.ok(!filteredModels.includes("kimi-3"));
 });
 
+test("parses repo config.yaml and includes glm-5.3", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const configPath = path.resolve(__dirname, "../../microvm-image/config.yaml");
+  const raw = fs.readFileSync(configPath, "utf8");
+  const parsed = YAML.parse(raw) as {
+    model_list: Array<{ model_name: string; litellm_params: { model: string; aws_region_name?: string } }>;
+  };
+  assert.ok(Array.isArray(parsed.model_list));
+  const glm53 = parsed.model_list.find((m) => m.model_name === "glm-5.3");
+  assert.ok(glm53, "glm-5.3 model must exist");
+  assert.equal(glm53.litellm_params.model, "bedrock/global.zai.glm-5.3");
+  assert.equal(glm53.litellm_params.aws_region_name, "us-west-2");
+
+  const filtered = filterLiteLlmConfigYaml(raw, { enableAzure: false, enableVertex: false });
+  const filteredModels = modelIdsFromConfig(filtered);
+  assert.ok(filteredModels.includes("glm-5.3"));
+  assert.ok(filteredModels.includes("global.zai.glm-5.3"));
+});
+

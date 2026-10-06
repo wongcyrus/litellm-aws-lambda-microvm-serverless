@@ -67,6 +67,8 @@ Wrapper behavior in `test-iam-strands.sh`:
 - `minimax-m2.5`
 - `kimi-k2.5`
 - `kimi-k3`
+- `glm-5.3`
+- `glm-5`
 
 ### `test-gcp-strands.sh`
 
