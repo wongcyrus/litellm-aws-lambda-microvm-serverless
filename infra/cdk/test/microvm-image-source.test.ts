@@ -75,7 +75,7 @@ test("parses repo config.yaml and includes glm-5.3", () => {
   const glm53 = parsed.model_list.find((m) => m.model_name === "glm-5.3");
   assert.ok(glm53, "glm-5.3 model must exist");
   assert.equal(glm53.litellm_params.model, "bedrock/global.zai.glm-5.3");
-  assert.equal(glm53.litellm_params.aws_region_name, "us-west-2");
+  assert.equal(glm53.litellm_params.aws_region_name, "us-east-1");
 
   const filtered = filterLiteLlmConfigYaml(raw, { enableAzure: false, enableVertex: false });
   const filteredModels = modelIdsFromConfig(filtered);

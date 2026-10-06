@@ -26,19 +26,19 @@ model_list:
   - model_name: glm-5.3
     litellm_params:
       model: bedrock/global.zai.glm-5.3
-      aws_region_name: "us-west-2"
+      aws_region_name: "us-east-1"
       drop_params: true
 
   - model_name: global.zai.glm-5.3
     litellm_params:
       model: bedrock/global.zai.glm-5.3
-      aws_region_name: "us-west-2"
+      aws_region_name: "us-east-1"
       drop_params: true
 
   - model_name: glm-5
     litellm_params:
       model: bedrock/zai.glm-5
-      aws_region_name: "us-west-2"
+      aws_region_name: "us-east-1"
       drop_params: true
 
   # Azure OpenAI Configuration (gpt-5.2, gpt-5.4*, gpt-5.6*)
