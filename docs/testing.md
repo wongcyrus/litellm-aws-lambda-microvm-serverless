@@ -73,14 +73,10 @@ Wrapper behavior in `test-iam-strands.sh`:
 ### `test-gcp-strands.sh`
 
 - `gemini-3.8-flash`
+- `gemini-3.8-pro`
+- `gemini-3.5-pro`
 - `gemini-3.5-flash`
 - `gemini-3.5-flash-lite`
-- `gemini-flash`
-- `gemini-pro`
-- `gemini-3.1-pro-preview`
-- `gemini-3.1-pro-preview-customtools`
-- `gemini-2.5-pro`
-- `gemini-3.1-flash-image`
 
 ### `test-azure-strands.sh`
 

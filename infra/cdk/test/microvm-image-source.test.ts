@@ -95,13 +95,10 @@ test("parses repo config.yaml and includes updated Vertex AI Gemini models", () 
 
   const expectedModels: Array<{ model_name: string; vertex_model: string }> = [
     { model_name: "gemini-3.8-flash", vertex_model: "vertex_ai/gemini-3.8-flash" },
+    { model_name: "gemini-3.8-pro", vertex_model: "vertex_ai/gemini-3.8-pro" },
+    { model_name: "gemini-3.5-pro", vertex_model: "vertex_ai/gemini-3.5-pro" },
     { model_name: "gemini-3.5-flash", vertex_model: "vertex_ai/gemini-3.5-flash" },
     { model_name: "gemini-3.5-flash-lite", vertex_model: "vertex_ai/gemini-3.5-flash-lite" },
-    { model_name: "gemini-flash", vertex_model: "vertex_ai/gemini-3.8-flash" },
-    { model_name: "gemini-pro", vertex_model: "vertex_ai/gemini-3.1-pro-preview" },
-    { model_name: "gemini-3.1-pro-preview", vertex_model: "vertex_ai/gemini-3.1-pro-preview" },
-    { model_name: "gemini-2.5-pro", vertex_model: "vertex_ai/gemini-2.5-pro" },
-    { model_name: "gemini-3.1-flash-image", vertex_model: "vertex_ai/gemini-3.1-flash-image" },
   ];
 
   for (const exp of expectedModels) {
@@ -110,13 +107,20 @@ test("parses repo config.yaml and includes updated Vertex AI Gemini models", () 
     assert.equal(found.litellm_params.model, exp.vertex_model);
   }
 
-  // Ensure shut down preview and deprecating 3.6/3.7 models are excluded
+  // Ensure shut down, 2.5, 3.1, and dummy models are excluded
   const excludedModels = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-image",
     "gemini-3.1-flash-image-preview",
     "gemini-3.6-flash",
     "gemini-3.7-flash",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-pro",
+    "gemini-flash",
   ];
   for (const excluded of excludedModels) {
     const found = parsed.model_list.find((m) => m.model_name === excluded);
