@@ -61,7 +61,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         version: rds.AuroraPostgresEngineVersion.VER_16_4
       }),
       writer: rds.ClusterInstance.serverlessV2("writer"),
-      serverlessV2MinCapacity: 0.5,
+      serverlessV2MinCapacity: 0,
       serverlessV2MaxCapacity: 2,
       defaultDatabaseName: "litellm",
       credentials: rds.Credentials.fromGeneratedSecret("litellm", {
@@ -410,7 +410,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
               dbCluster.secret!.secretValueFromJson("password").toString(),
               "@",
               dbCluster.clusterEndpoint.hostname,
-              ":5432/litellm?sslmode=prefer&connect_timeout=30&pool_timeout=30"
+              ":5432/litellm?sslmode=prefer&connect_timeout=60&pool_timeout=60"
             ])
           },
           {
@@ -427,7 +427,8 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
           { Key: "AZURE_API_KEY", Value: props.azureApiKey ?? "" },
           { Key: "STORE_MODEL_IN_DB", Value: "False" },
           { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" },
-          { Key: "DISABLE_SCHEMA_UPDATE", Value: "true" }
+          { Key: "DISABLE_SCHEMA_UPDATE", Value: "true" },
+          { Key: "DB_WAIT_TIMEOUT", Value: "120" }
         ],
         Hooks: {},
         Logging: {

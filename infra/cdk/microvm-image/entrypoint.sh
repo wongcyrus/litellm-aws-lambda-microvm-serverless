@@ -9,9 +9,10 @@ try:
     parsed = urllib.parse.urlsplit(db_url)
     host = parsed.hostname
     port = parsed.port or 5432
+    timeout_s = int(os.environ.get("DB_WAIT_TIMEOUT", "120"))
     if host:
-        print(f"Waiting for database {host}:{port} to be reachable...", flush=True)
-        for i in range(45):
+        print(f"Waiting for database {host}:{port} to be reachable (timeout: {timeout_s}s)...", flush=True)
+        for i in range(timeout_s):
             try:
                 s = socket.create_connection((host, port), timeout=2)
                 s.close()
@@ -20,7 +21,7 @@ try:
             except Exception:
                 time.sleep(1)
         else:
-            print("Warning: Database connection timed out after 45s", flush=True)
+            print(f"Warning: Database connection timed out after {timeout_s}s", flush=True)
 except Exception as e:
     print(f"Database check error: {e}", flush=True)
 '
