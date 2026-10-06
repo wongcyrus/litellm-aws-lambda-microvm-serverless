@@ -83,3 +83,41 @@ test("parses repo config.yaml and includes glm-5.3", () => {
   assert.ok(filteredModels.includes("global.zai.glm-5.3"));
 });
 
+test("parses repo config.yaml and includes updated Vertex AI Gemini models", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const configPath = path.resolve(__dirname, "../../microvm-image/config.yaml");
+  const raw = fs.readFileSync(configPath, "utf8");
+  const parsed = YAML.parse(raw) as {
+    model_list: Array<{ model_name: string; litellm_params: { model: string } }>;
+  };
+  assert.ok(Array.isArray(parsed.model_list));
+
+  const expectedModels = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-image",
+    "gemini-3.1-pro-preview",
+  ];
+
+  for (const modelId of expectedModels) {
+    const found = parsed.model_list.find((m) => m.model_name === modelId);
+    assert.ok(found, `${modelId} must exist in config.yaml`);
+    assert.equal(found.litellm_params.model, `vertex_ai/${modelId}`);
+  }
+
+  // Ensure shut down preview model was removed
+  const previewImage = parsed.model_list.find((m) => m.model_name === "gemini-3.1-flash-image-preview");
+  assert.ok(!previewImage, "gemini-3.1-flash-image-preview should be removed as it is shut down");
+
+  // Verify vertex filtering
+  const filtered = filterLiteLlmConfigYaml(raw, { enableAzure: false, enableVertex: false });
+  const filteredModels = modelIdsFromConfig(filtered);
+  for (const modelId of expectedModels) {
+    assert.ok(!filteredModels.includes(modelId), `${modelId} must be filtered when enableVertex is false`);
+  }
+});

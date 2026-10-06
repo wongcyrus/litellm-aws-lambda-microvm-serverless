@@ -112,10 +112,38 @@ model_list:
       api_version: "2024-08-01-preview"
       drop_params: true
 
-  # Gemini (current Vertex text/chat models)
+  # Gemini (Vertex text/chat models)
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.8-flash
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-3.7-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.7-flash
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-3.6-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.6-flash
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
+      vertex_credentials: os.environ/VERTEX_CREDENTIALS
+      vertex_project: os.environ/VERTEXAI_PROJECT
+      vertex_location: global
+
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash-lite
       vertex_credentials: os.environ/VERTEX_CREDENTIALS
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: global
@@ -127,9 +155,9 @@ model_list:
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: global
 
-  - model_name: gemini-3.1-flash-image-preview
+  - model_name: gemini-3.1-flash-image
     litellm_params:
-      model: vertex_ai/gemini-3.1-flash-image-preview
+      model: vertex_ai/gemini-3.1-flash-image
       vertex_credentials: os.environ/VERTEX_CREDENTIALS
       vertex_project: os.environ/VERTEXAI_PROJECT
       vertex_location: global
