@@ -57,5 +57,15 @@ export function createMicrovmImageSourceDir(
   const generatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "litellm-microvm-image-"));
   fs.writeFileSync(path.join(generatedDir, "Dockerfile"), rewrittenDockerfile, "utf8");
   fs.writeFileSync(path.join(generatedDir, "config.yaml"), rewrittenConfig, "utf8");
+
+  for (const file of fs.readdirSync(sourceDir)) {
+    if (file !== "Dockerfile" && file !== "config.yaml") {
+      const srcPath = path.join(sourceDir, file);
+      if (fs.statSync(srcPath).isFile()) {
+        fs.copyFileSync(srcPath, path.join(generatedDir, file));
+      }
+    }
+  }
+
   return generatedDir;
 }

@@ -61,7 +61,7 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
         version: rds.AuroraPostgresEngineVersion.VER_16_4
       }),
       writer: rds.ClusterInstance.serverlessV2("writer"),
-      serverlessV2MinCapacity: 0,
+      serverlessV2MinCapacity: 0.5,
       serverlessV2MaxCapacity: 2,
       defaultDatabaseName: "litellm",
       credentials: rds.Credentials.fromGeneratedSecret("litellm", {
@@ -426,7 +426,8 @@ export class PrivateLiteLlmMicrovmStack extends cdk.Stack {
           { Key: "AZURE_API_BASE", Value: props.azureApiBase ?? "" },
           { Key: "AZURE_API_KEY", Value: props.azureApiKey ?? "" },
           { Key: "STORE_MODEL_IN_DB", Value: "False" },
-          { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" }
+          { Key: "STORE_PROMPTS_IN_SPEND_LOGS", Value: "True" },
+          { Key: "DISABLE_SCHEMA_UPDATE", Value: "true" }
         ],
         Hooks: {},
         Logging: {
