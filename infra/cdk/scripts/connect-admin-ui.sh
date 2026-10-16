@@ -182,6 +182,7 @@ fi
 import http.server
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -216,7 +217,7 @@ def find_running_microvm() -> tuple[str, str] | None:
     paginator = client.get_paginator("list_microvms")
     for page in paginator.paginate():
         for item in page.get("items", []):
-            if item.get("state") != "RUNNING":
+            if item.get("state") not in {"RUNNING", "SUSPENDED"}:
                 continue
             if not matches_image(str(item.get("imageArn") or "")):
                 continue
@@ -271,8 +272,49 @@ token_resp = client.create_microvm_auth_token(
     allowedPorts=[{"port": microvm_port}],
 )
 proxy_auth_token = token_resp["authToken"]["X-aws-proxy-auth"]
-upstream_base = f"https://{microvm_endpoint}"
 local_base = f"http://127.0.0.1:{listen_port}"
+
+state_lock = threading.Lock()
+session_state = {
+    "microvm_id": microvm_id,
+    "microvm_endpoint": microvm_endpoint,
+    "proxy_auth_token": proxy_auth_token,
+    "token_expires_at": time.time() + max(60, (token_minutes - 5) * 60),
+}
+
+
+def get_valid_session(force_refresh: bool = False) -> tuple[str, str, str]:
+    with state_lock:
+        now = time.time()
+        if not force_refresh and now < float(session_state["token_expires_at"]):
+            return (
+                str(session_state["microvm_id"]),
+                str(session_state["microvm_endpoint"]),
+                str(session_state["proxy_auth_token"]),
+            )
+        try:
+            detail = client.get_microvm(microvmIdentifier=str(session_state["microvm_id"]))
+            vm_state = str(detail.get("state") or "")
+            if vm_state in {"TERMINATED", "TERMINATING"}:
+                raise RuntimeError("MicroVM terminated")
+        except Exception:
+            found = find_running_microvm()
+            if found is None and start_if_needed:
+                found = start_microvm()
+            if found is not None:
+                session_state["microvm_id"], session_state["microvm_endpoint"] = found
+        resp = client.create_microvm_auth_token(
+            microvmIdentifier=str(session_state["microvm_id"]),
+            expirationInMinutes=token_minutes,
+            allowedPorts=[{"port": microvm_port}],
+        )
+        session_state["proxy_auth_token"] = resp["authToken"]["X-aws-proxy-auth"]
+        session_state["token_expires_at"] = time.time() + max(60, (token_minutes - 5) * 60)
+        return (
+            str(session_state["microvm_id"]),
+            str(session_state["microvm_endpoint"]),
+            str(session_state["proxy_auth_token"]),
+        )
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -287,6 +329,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def _forward(self) -> None:
+        _, cur_endpoint, cur_token = get_valid_session()
+        upstream_base = f"https://{cur_endpoint}"
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path or "/"
         if path == "/ui":
@@ -302,7 +346,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if lowered in {"host", "content-length", "connection", "x-aws-proxy-auth", "x-aws-proxy-port"}:
                 continue
             req_headers[key] = value
-        req_headers["X-aws-proxy-auth"] = proxy_auth_token
+        req_headers["X-aws-proxy-auth"] = cur_token
         req_headers["X-aws-proxy-port"] = str(microvm_port)
 
         body = None
@@ -312,7 +356,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         request = urllib.request.Request(url=upstream, data=body, method=self.command, headers=req_headers)
         try:
-            with opener.open(request, timeout=30) as response:
+            with opener.open(request, timeout=60) as response:
                 payload = response.read()
                 self.send_response(response.status)
                 for key, value in response.headers.items():
@@ -320,7 +364,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                         continue
                     if key.lower() == "location":
                         value = value.replace(upstream_base, local_base)
-                        value = value.replace(f"http://{microvm_endpoint}", local_base)
+                        value = value.replace(f"http://{cur_endpoint}", local_base)
                     self.send_header(key, value)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -334,7 +378,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                         continue
                     if key.lower() == "location":
                         value = value.replace(upstream_base, local_base)
-                        value = value.replace(f"http://{microvm_endpoint}", local_base)
+                        value = value.replace(f"http://{cur_endpoint}", local_base)
                     self.send_header(key, value)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
