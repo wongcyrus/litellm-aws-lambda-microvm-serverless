@@ -21,6 +21,15 @@ test("synthesizes PrivateLiteLlmMicrovmStack with publicMicrovm=true", () => {
   template.resourceCountIs("AWS::RDS::DBCluster", 1);
   template.resourceCountIs("AWS::DynamoDB::Table", 2);
   template.resourceCountIs("AWS::ApiGateway::RestApi", 1);
+  template.resourceCountIs("AWS::EC2::VPCEndpoint", 2);
+  template.hasResourceProperties("AWS::EC2::VPCEndpoint", {
+    VpcEndpointType: "Interface",
+    ServiceName: "com.amazonaws.us-east-1.bedrock-runtime",
+    PrivateDnsEnabled: true,
+  });
+  template.hasResourceProperties("AWS::EC2::VPCEndpoint", {
+    VpcEndpointType: "Gateway",
+  });
 
   // Check expected outputs
   template.hasOutput("MicrovmAuthProxyFunctionName", {});
@@ -42,6 +51,15 @@ test("synthesizes PrivateLiteLlmMicrovmStack with publicMicrovm=false", () => {
   const template = Template.fromStack(stack);
   template.resourceCountIs("AWS::EC2::VPC", 1);
   template.resourceCountIs("AWS::RDS::DBCluster", 1);
+  template.resourceCountIs("AWS::EC2::VPCEndpoint", 2);
+  template.hasResourceProperties("AWS::EC2::VPCEndpoint", {
+    VpcEndpointType: "Interface",
+    ServiceName: "com.amazonaws.us-east-1.bedrock-runtime",
+    PrivateDnsEnabled: true,
+  });
+  template.hasResourceProperties("AWS::EC2::VPCEndpoint", {
+    VpcEndpointType: "Gateway",
+  });
 });
 
 test("synthesizes PrivateLiteLlmMicrovmStack with Azure and Vertex providers and CodeBuild mirror", () => {
@@ -111,4 +129,3 @@ test("applies custom apiIntegrationTimeoutSeconds (e.g. 60s)", () => {
     },
   });
 });
-

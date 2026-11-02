@@ -49,16 +49,14 @@ export function createNetworkingResources(
     "Allow connector traffic to AWS private endpoints"
   );
 
-  const interfaceServices = ["bedrock-runtime", "bedrock", "secretsmanager", "kms", "logs", "sts"];
-  for (const service of interfaceServices) {
-    new ec2.InterfaceVpcEndpoint(scope, `${toPascalCase(service)}Endpoint`, {
-      vpc: appVpc,
-      service: new ec2.InterfaceVpcEndpointService(`com.amazonaws.${options.region}.${service}`, 443),
-      privateDnsEnabled: true,
-      securityGroups: [endpointSecurityGroup],
-      subnets: { subnetGroupName: microvmSubnetGroupName }
-    });
-  }
+  // A new construct ID recreates the endpoint deleted outside CloudFormation.
+  new ec2.InterfaceVpcEndpoint(scope, "BedrockRuntimeVpcEndpoint", {
+    vpc: appVpc,
+    service: new ec2.InterfaceVpcEndpointService(`com.amazonaws.${options.region}.bedrock-runtime`, 443),
+    privateDnsEnabled: true,
+    securityGroups: [endpointSecurityGroup],
+    subnets: { subnetGroupName: microvmSubnetGroupName }
+  });
 
   appVpc.addGatewayEndpoint("S3GatewayEndpoint", {
     service: ec2.GatewayVpcEndpointAwsService.S3,
@@ -78,12 +76,4 @@ export function createNetworkingResources(
     connectorSecurityGroup,
     dbSecurityGroup
   };
-}
-
-function toPascalCase(value: string): string {
-  return value
-    .split(/[^a-zA-Z0-9]/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("");
 }

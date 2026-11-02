@@ -16,7 +16,7 @@ Core resources:
 The long stack was split into domain modules:
 
 - `infra/cdk/lib/stack/networking.ts`
-  - VPC/subnets, connector SG, DB SG, interface endpoints, S3 gateway endpoint.
+  - VPC/subnets, connector SG, DB SG, Bedrock Runtime interface endpoint, S3 gateway endpoint.
 - `infra/cdk/lib/stack/image-artifacts.ts`
   - Artifact S3 bucket, ECR base repo, CodeBuild mirror project.
 - `infra/cdk/lib/microvm-image-source.ts`
@@ -56,7 +56,7 @@ flowchart LR
       subgraph DBPRIV1["DbPrivate subnet (isolated)"]
         Aurora[(Aurora Serverless v2<br/>PostgreSQL)]
       end
-      VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs + S3 GW]
+      VPCE[VPC Endpoints<br/>Bedrock Runtime + S3 GW]
     end
   end
 
@@ -95,7 +95,7 @@ flowchart LR
       subgraph DBPRIV2["DbPrivate subnet (isolated)"]
         Aurora[(Aurora Serverless v2<br/>PostgreSQL)]
       end
-      VPCE[VPC Endpoints<br/>Bedrock/STS/KMS/Secrets/Logs + S3 GW]
+      VPCE[VPC Endpoints<br/>Bedrock Runtime + S3 GW]
     end
   end
 
@@ -114,7 +114,7 @@ flowchart LR
 | NAT gateway | None (`natGateways: 0`) | One NAT (`natGateways: 1`) | Public mode has lower fixed baseline cost; private mode adds steady NAT cost. |
 | Aurora subnet | `DbPrivate` isolated | `DbPrivate` isolated | Same DB isolation in both modes. |
 | Aurora reachability from MicroVM | Via VPC egress connector + SG allow 5432 from connector SG | Same | Same security posture for DB path. |
-| Private AWS service access | Interface VPC endpoints + S3 gateway endpoint | Same | Keeps Bedrock/STS/KMS/Secrets/Logs on private VPC endpoint paths in both modes. |
+| Private AWS service access | Bedrock Runtime interface endpoint + S3 gateway endpoint | Same | Only Bedrock inference and S3 have private endpoint paths. Other direct AWS API calls require an additional endpoint or internet egress. The S3 gateway endpoint has no hourly or data processing charge. |
 | Public internet path from MicroVM runtime | No (no NAT route for VPC-attached Lambda ENIs) | Yes (private subnet -> NAT -> internet) | `publicMicrovm=true` cannot reliably call non-AWS internet endpoints; use `publicMicrovm=false` for Azure/public GCP model egress. |
 | API ingress/auth layers | API Gateway API key + LiteLLM key header | Same | Same application/API auth posture across modes. |
 | Operational complexity | Lower (no NAT routing/cost management) | Higher (NAT lifecycle and routing to maintain) | Public mode is simpler; private mode is stricter network posture with extra ops/cost overhead. |
@@ -127,6 +127,32 @@ flowchart LR
 
 AWS reference: Lambda ENI behavior and internet access  
 https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc-internet.html
+
+## VPC endpoints and monthly cost
+
+Both network modes define one paid interface endpoint, `bedrock-runtime`, across two Availability Zones, plus a free S3 gateway endpoint.
+
+| Endpoint | Purpose | Cost |
+|---|---|---|
+| Bedrock Runtime (`com.amazonaws.<region>.bedrock-runtime`) | Private model inference and streaming from LiteLLM | Hourly per AZ plus data processing |
+| S3 gateway | Private S3 access without NAT processing | No endpoint hourly or data processing charge |
+
+The stack does not create interface endpoints for the Bedrock control plane, Secrets Manager, KMS, CloudWatch Logs, or STS. Direct runtime calls to those APIs would need another endpoint or working internet egress. Aurora connectivity uses the VPC egress connector and security groups, not an interface endpoint.
+
+For `us-east-1`, using the $0.01 per endpoint per AZ-hour rate as of November 2026:
+
+| Month length | Bedrock Runtime endpoint hourly cost |
+|---|---|
+| 30 days | $0.01 x 2 AZs x 24 hours x 30 days = **US$14.40** |
+| 31 days | $0.01 x 2 AZs x 24 hours x 31 days = **US$14.88** |
+
+Data processing adds $0.01/GB for the first 1 PB per month in the region. These estimates exclude Bedrock inference, Aurora, Lambda, public IPv4, data transfer, taxes, and other services. Private mode also incurs NAT gateway charges. Endpoint hourly charges continue while the endpoint is provisioned, even when no MicroVM is running.
+
+The VPC egress connector creates a managed path into the VPC and is separate from both PrivateLink endpoints and NAT gateways. Current Lambda pricing lists no separate connector fee.
+
+`publicMicrovm=true` selects public subnets for VPC egress; it does not select the default AWS-managed internet egress connector or configure a public IPv4 association. In the current IPv4-only, no-NAT configuration, keep the Bedrock Runtime endpoint for inference. Azure/GCP public APIs require the private-with-NAT mode.
+
+Sources: [AWS PrivateLink pricing](https://aws.amazon.com/privatelink/pricing/), [Lambda MicroVM networking](https://docs.aws.amazon.com/lambda/latest/dg/microvms-networking.html), [Lambda pricing](https://aws.amazon.com/lambda/pricing/).
 
 ## Model source handling
 

@@ -63,6 +63,8 @@ npx cdk destroy PrivateLiteLlmMicrovmStack --force -c settingsFile=cdk-settings.
 ## Notes
 
 - `publicMicrovm=false` enables NAT egress and is required when runtime must call non-AWS internet providers.
+- Both modes create only the Bedrock Runtime interface endpoint and a free S3 gateway endpoint. See [VPC endpoints and monthly cost](cdk-design.md#vpc-endpoints-and-monthly-cost).
+- The endpoint reduction changes the Bedrock Runtime construct ID to recreate the previously manually deleted endpoint. Review `cdk diff` before deployment: the migration adds one Bedrock Runtime endpoint and removes the six old interface endpoint records. An unchanged S3 gateway endpoint that was manually deleted is not automatically recreated by a normal deployment.
 - `output.json` is written by `deploy-stack.sh` and used by other scripts for stack outputs.
 
 ## Script reference (important)
